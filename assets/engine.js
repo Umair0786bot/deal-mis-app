@@ -365,8 +365,9 @@
       const price = meta.price != null ? meta.price : (dr && dr.your_price) || null, cogs = meta.cogs || 0, fba = meta.fba || 0;
       const velApp = row && row.vel != null ? row.vel : (meta.p30 || null); const velL30 = l30(asin) != null ? l30(asin) : (meta.l30 != null ? meta.l30 / 30 : null);
       const expApp = row && row.baseline_demand != null ? row.baseline_demand : null; const expVel = (velApp || velL30 || 0) * deal.days;
-      const expBase = p.demand === 'app' && expApp != null && expApp > 0 ? expApp : expVel;
-      const expected = Math.round(expBase * up * 100) / 100;
+      // Sheet column L: 'Our Expected Demand (APP)' is used as-is for max sales = MIN(L, allocation); the multiplier only applies on the velocity basis.
+      const useApp = p.demand === 'app' && expApp != null;
+      const expected = useApp ? expApp : Math.round(expVel * up * 100) / 100;
       const alloc = al[sku] != null ? al[sku] : (row && own ? row.safe_alloc : (row ? row.safe_alloc : null));
       const age = asin != null && asinIdx.has(asin) ? SB.age[String(asinIdx.get(asin))] : null; const aisUnits = age ? age[1] : 0, aisCharge = age ? age[0] : 0;
       const ltsfUnits = alloc === 0 && aisUnits > 0 ? aisUnits : 0;
