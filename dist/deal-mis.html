@@ -969,7 +969,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     asOf = asOf || E.lastDate; const today = D.settings.today;
     const live = deals.filter(d => !d.cancelled && !d.planned_end && (E.status(d, today) === 'live' || (d.end >= asOf && d.start <= asOf)));
     const out = [];
-    live.forEach(d => { const m = E.metrics(d, asOf, { basis }); m.perSku.forEach(p => { const st = p.alloc == null ? 'no allocation' : p.alloc === 0 ? 'not enrolled' : p.units >= p.stop ? 'STOP now' : p.units >= p.alloc * D.settings.stop_warn ? 'near limit' : p.proj >= p.stop ? 'will breach' : 'ok'; out.push({ deal: d.id, tag: d.tag, type: d.type, ...p, status: st }); }); });
+    live.forEach(d => { const m = E.metrics(d, asOf, { basis }); m.perSku.forEach(p => { const st = p.alloc == null ? 'no allocation' : p.alloc === 0 ? (m.known && p.units > 0 ? 'STOP now' : 'not enrolled') : p.units >= p.stop ? 'STOP now' : p.units >= p.alloc * D.settings.stop_warn ? 'near limit' : p.proj >= p.stop ? 'will breach' : 'ok'; out.push({ deal: d.id, tag: d.tag, type: d.type, ...p, status: st }); }); });
     return out;
   };
 
@@ -996,7 +996,9 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
       const coverAfter = stockAfter == null ? null : stockAfter / vel;
       const rank = (p.rankVar || 0) >= 0.1;
       let flag = 'OK', cls = 'good', why = '';
-      if (p.alloc === 0) { flag = 'NOT IN DEAL'; cls = 'dim'; why = 'safe allocation 0'; }
+      const zeroButEnrolled = p.alloc === 0 && m.known;
+      if (p.alloc === 0 && !m.known) { flag = 'NOT IN DEAL'; cls = 'dim'; why = 'safe allocation 0'; }
+      else if (zeroButEnrolled && p.units > 0) { flag = stockNow != null && projRemaining > stockNow ? 'WILL RUN OUT' : 'REMOVE FROM DEAL'; cls = 'bad'; why = `planner allowed 0 units but it is enrolled and sold ${p.units}` + (stockNow != null ? `, ${Math.round(stockNow)} in stock` : ''); }
       else if (stockNow != null && projRemaining > stockNow) { flag = 'WILL RUN OUT'; cls = 'bad'; why = `${Math.round(projRemaining)} more units expected before ${deal.end}, ${Math.round(stockNow)} in stock`; }
       else if (p.pctStop != null && p.pctStop >= s.stop_line) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `sold ${Math.round(p.pctStop * 100)}% of the stop line`; }
       else if (coverAfter != null && coverAfter < s.min_cover_days) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `${Math.round(coverAfter)} days of cover left after the deal (floor ${s.min_cover_days})`; }
