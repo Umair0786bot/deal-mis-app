@@ -307,11 +307,11 @@
       let flag = 'OK', cls = 'good', why = '';
       const zeroButEnrolled = p.alloc === 0 && m.known;
       if (p.alloc === 0 && !m.known) { flag = 'NOT IN DEAL'; cls = 'dim'; why = 'safe allocation 0'; }
-      else if (zeroButEnrolled && p.units > 0) { flag = stockNow != null && projRemaining > stockNow ? 'WILL RUN OUT' : 'REMOVE FROM DEAL'; cls = 'bad'; why = `planner allowed 0 units but it is enrolled and sold ${p.units}` + (stockNow != null ? `, ${Math.round(stockNow)} in stock` : ''); }
       else if (stockNow != null && projRemaining > stockNow) { flag = 'WILL RUN OUT'; cls = 'bad'; why = `${Math.round(projRemaining)} more units expected before ${deal.end}, ${Math.round(stockNow)} in stock`; }
       else if (p.pctStop != null && p.pctStop >= s.stop_line) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `sold ${Math.round(p.pctStop * 100)}% of the stop line`; }
       else if (coverAfter != null && coverAfter < s.min_cover_days) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `${Math.round(coverAfter)} days of cover left after the deal (floor ${s.min_cover_days})`; }
       else if ((p.pctStop != null && p.pctStop >= s.stop_warn) || (coverAfter != null && coverAfter < s.min_cover_days * 1.6) || (pace != null && pace >= 1.5)) { flag = 'WATCH'; cls = 'warn'; why = pace >= 1.5 ? `selling ${Math.round(pace * 100)}% of plan` : coverAfter != null && coverAfter < s.min_cover_days * 1.6 ? `${Math.round(coverAfter)} days of cover after the deal` : `${Math.round(p.pctStop * 100)}% of the stop line`; }
+      if (zeroButEnrolled) why = ('planner allowed 0 but enrolled' + (why ? ' - ' + why : '')); 
       if (rank && cls === 'warn') { flag = 'PROTECT RANK VARIATION'; cls = 'bad'; why = 'rank driver - ' + why; }
       else if (rank && cls === 'bad') { why = 'rank driver - ' + why; }
       const perf = pace == null ? 'no baseline' : pace >= 1.25 ? 'over' : pace <= 0.75 ? 'under' : 'on plan';
