@@ -1,0 +1,15 @@
+{
+  "name": "deal-mis",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deal MIS - the Amazon deal tracker, analysis files and scorecards as one static app",
+  "scripts": {
+    "status": "node scripts/status.cjs",
+    "bundle": "python scripts/bundle.py",
+    "verify": "node scripts/verify.cjs",
+    "postinstall": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}
