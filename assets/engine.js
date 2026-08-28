@@ -342,5 +342,66 @@
     const first = pl[Object.keys(pl)[0]]; return { rows, total: rows.reduce((a, r) => a + r.rec, 0), totalSafe: rows.reduce((a, r) => a + (r.safe || 0), 0), buffer, mult, source: !Object.keys(pl).length ? 'cost master velocities (no planner pull)' : own ? 'planner pull ' + (first.asof || '') + ' for this deal' : 'planner pull ' + (first.asof || '') + ' for the same parent (' + deal.tag + '), safe allocation not applied' };
   };
 
+
+  /** Deals Financials model (the Deal Analysis file), per SKU, for a planned or live deal.
+      Columns follow the sheet: costs -> demand & stock -> pricing (dashboard / historical / reference) -> economics on
+      expected demand (REFERENCE) and on stock-limited max sales (TRUE PICTURE) -> lost units/revenue (OPPORTUNITY COST). */
+  E.dashboardFor = (deal) => {
+    const rows = (D.dashboard && D.dashboard.rows) || []; const out = {};
+    const pick = (list) => { list.forEach(r => { const k = r.sku || r.asin; if (!out[k] || r.date > out[k].date) out[k] = r; }); };
+    pick(rows.filter(r => r.deal === deal.id));
+    if (!Object.keys(out).length) pick(rows.filter(r => r.tag === deal.tag));            // latest pull for the parent
+    const src = Object.values(out)[0]; return { rows: out, date: src ? src.date : null, deal: src ? src.deal : null, own: !!rows.find(r => r.deal === deal.id) };
+  };
+  E.analysis = (deal, p) => {
+    p = Object.assign({ referral: D.settings.referral, fee_day: D.settings.fee_day, fee_pct: D.settings.fee_pct, fee_cap: D.settings.fee_cap, priceMode: 'dashboard', ppcPct: 0, uplift: null, demand: 'app' }, p || {});
+    const mult = E.multiplier(deal, E.lastDate); const up = p.uplift || 1;
+    const pl = E.plannerFor(deal); const al = allocByDeal[deal.id] || {}; const own = plannerByDeal[deal.id] && Object.keys(plannerByDeal[deal.id]).length;
+    const dash = E.dashboardFor(deal); const phist = {}; (D.price_history || []).forEach(x => { if (x.sku && x.deal_price != null) phist[x.sku] = x.deal_price; });
+    const skus = new Set([...Object.keys(pl), ...Object.keys(al), ...Object.keys(dash.rows)]); if (!skus.size) D.skus.filter(s => s.tag === deal.tag).forEach(s => skus.add(s.sku));
+    const l30 = (asin) => { const i = asinIdx.get(asin); if (i == null) return null; const one = new Set([i]); const days = SB.dates.filter(d => d > addDays(E.lastDate, -30) && d <= E.lastDate); if (!days.length) return null; return days.reduce((a, d) => a + sumDay(dateIdx.get(d), one).units, 0) / days.length; };
+    const rows = [...skus].map(sku => {
+      const meta = skuMeta.get(sku) || {}; const row = pl[sku]; const dr = dash.rows[sku] || dash.rows[meta.asin] || null; const asin = meta.asin || (dr && dr.asin) || null;
+      const price = meta.price != null ? meta.price : (dr && dr.your_price) || null, cogs = meta.cogs || 0, fba = meta.fba || 0;
+      const velApp = row && row.vel != null ? row.vel : (meta.p30 || null); const velL30 = l30(asin) != null ? l30(asin) : (meta.l30 != null ? meta.l30 / 30 : null);
+      const expApp = row && row.baseline_demand != null ? row.baseline_demand : null; const expVel = (velApp || velL30 || 0) * deal.days;
+      const expBase = p.demand === 'app' && expApp != null && expApp > 0 ? expApp : expVel;
+      const expected = Math.round(expBase * up * 100) / 100;
+      const alloc = al[sku] != null ? al[sku] : (row && own ? row.safe_alloc : (row ? row.safe_alloc : null));
+      const age = asin != null && asinIdx.has(asin) ? SB.age[String(asinIdx.get(asin))] : null; const aisUnits = age ? age[1] : 0, aisCharge = age ? age[0] : 0;
+      const ltsfUnits = alloc === 0 && aisUnits > 0 ? aisUnits : 0;
+      const maxSales = alloc == null ? expected : Math.min(expected, alloc);
+      const newSafe = (alloc || 0) + ltsfUnits; const maxSalesLtsf = alloc == null ? expected : Math.min(expected, newSafe);
+      const refPrice = dr ? dr.ref : null; const dashPrice = dr ? (dr.manual || dr.final || dr.max_deal || null) : null; const histPrice = phist[sku] || null;
+      const selPrice = p.priceMode === 'historical' ? (histPrice || dashPrice) : p.priceMode === 'reference' ? (refPrice || dashPrice) : (dashPrice || histPrice || (price ? Math.round(price * 0.85 * 100) / 100 : null));
+      const priceSrc = p.priceMode === 'historical' && histPrice ? 'Historical' : p.priceMode === 'reference' && refPrice ? 'Reference' : dashPrice ? 'Dashboard' : histPrice ? 'Historical' : price ? 'Base −15%' : 'MISSING';
+      const str = refPrice != null && price != null && refPrice > price; const strPct = str ? (refPrice - price) / price : 0;
+      const match = dashPrice == null || histPrice == null ? '' : dashPrice === histPrice ? 'Yes' : dashPrice < histPrice ? 'Current deal price low' : 'Favorable deal price';
+      const unitMargin = selPrice != null ? selPrice - cogs - fba - selPrice * p.referral : null;
+      const expRev = selPrice != null ? selPrice * expected : 0, gp = unitMargin != null ? unitMargin * expected : 0, varFee = expRev * p.fee_pct, profitPre = gp - varFee;
+      const revMS = selPrice != null ? selPrice * maxSalesLtsf : 0, gpMS = unitMargin != null ? unitMargin * maxSalesLtsf : 0, varFeeMS = revMS * p.fee_pct, profitMS = gpMS - varFeeMS, ppc = revMS * p.ppcPct, netPost = profitMS - ppc;
+      const lostUnits = Math.max(0, expected - maxSalesLtsf), lostRev = selPrice != null ? lostUnits * selPrice : 0;
+      const cash = selPrice != null ? (selPrice - fba - selPrice * p.referral) * maxSalesLtsf : 0;
+      let read = 'Run'; const why = [];
+      if (selPrice == null) { read = 'No price'; why.push('no deal price on file'); }
+      else if (dr && /No reference/.test(dr.status || '')) { read = 'Cannot run'; why.push('no reference price in Seller Central'); }
+      else if (unitMargin != null && unitMargin <= 0) { read = 'Exclude'; why.push('negative margin at the deal price'); }
+      else if (alloc === 0 && ltsfUnits > 0) { read = 'LTSF review'; why.push(`${aisUnits} aged units — storage may cost more than the discount`); }
+      else if (alloc === 0) { read = 'Not in deal'; why.push('safe allocation 0'); }
+      else if (dr && /Check dashboard/.test(dr.status || '')) { read = 'Check price'; why.push('dashboard needs a manual price'); }
+      if (dr && dr.min_commit && alloc != null && alloc > 0 && alloc < dr.min_commit) why.push(`allocation below Amazon minimum ${dr.min_commit}`);
+      return { tag: deal.tag, sku, asin, rankVar: meta.rank_var || 0, size: meta.size || null, status: row ? row.status : null, price, cogs, fba, velApp, velL30, expApp, expVel, expected, ltsfUnits, alloc, maxSales, newSafe, maxSalesLtsf, revAllowed: selPrice != null ? newSafe * selPrice : 0, lostUnits, lostRev, refPrice, str, strPct, histPrice, dashPrice, dashStatus: dr ? dr.status : null, dashStock: dr ? dr.stock : null, minCommit: dr ? dr.min_commit : null, match, diff: dashPrice != null && histPrice != null ? dashPrice - histPrice : null, selPrice, priceSrc, unitMargin, expRev, gp, varFee, profitPre, aisUnits, aisCharge, revMS, gpMS, varFeeMS, profitMS, ppc, netPost, cash, fbaNow: row ? row.fba_now : meta.fba_on_hand, minDoh: row ? row.min_doh : null, postDoh: row ? row.post_doh_bal : null, read, why: why.join('; ') };
+    }).sort((a, b) => b.profitMS - a.profitMS);
+    const S = (k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
+    const upfront = p.fee_day * deal.days, variable = S('revMS') * p.fee_pct, totalFee = Math.min(upfront + variable, p.fee_cap);
+    const summary = { days: deal.days, upfront, variable, totalFee, cap: p.fee_cap, skus: rows.length, enrol: rows.filter(r => r.read === 'Run' || r.read === 'Check price').length, blocked: rows.filter(r => r.alloc === 0).length,
+      truePic: { rev: S('revMS'), gp: S('gpMS'), net: S('gpMS') - totalFee, margin: S('revMS') ? (S('gpMS') - totalFee) / S('revMS') : null, ppc: S('ppc'), netPost: S('gpMS') - totalFee - S('ppc'), cash: S('cash') - totalFee, units: S('maxSalesLtsf') },
+      reference: { rev: S('expRev'), gp: S('gp'), net: S('profitPre') - upfront, units: S('expected') },
+      opportunity: { lostUnits: S('lostUnits'), lostRev: S('lostRev'), blocked: rows.filter(r => r.alloc === 0).length, aisUnits: S('aisUnits'), aisCharge: S('aisCharge') },
+      mult, dash, priceMode: p.priceMode, ppcPct: p.ppcPct, uplift: up, demand: p.demand, params: p };
+    summary.reference.upside = summary.reference.net - summary.truePic.net;
+    return { rows, summary };
+  };
+
   window.Engine = E;
 })();

@@ -8,6 +8,9 @@ Static app (no build, no backend): `index.html` + `assets/{mis.css, mis.js, char
 - `/deal-edit` — add / close / cancel deals, Seller Central facts, enrolled ASIN list, objectives (`scripts/deal.py`).
 - `/deal-publish` — bundle, verify, commit, push (GitHub Pages at https://umair0786bot.github.io/deal-mis-app/), republish the artifact at the same URL.
 
+## Deal Analysis (Deals Financials) model
+`E.analysis(deal, {priceMode, ppcPct, uplift, demand})` reproduces the Deal Analysis file's per-SKU sheet: base price/COGS/FBA from `skus.js`, velocity + expected demand + safe allocation + FBA now from the planner pull (`E.plannerFor`), deal price from the Deal Dashboard pull (`data/dashboard.js`, latest for the deal else for the parent; manual > final > max deal), historical deal price from `price_history.js`, AIS units/charge from `sellerboard.age`. Referral = 15% of the deal price. Fee = $70 × days + 1% of max-sales revenue, capped $2,000. Three views: TRUE PICTURE (max sales, stock-limited), REFERENCE (all expected demand), OPPORTUNITY COST (lost units/revenue, blocked SKUs). `scripts/import_sources.py` loads these sources from the newest tracker + Deal Analysis workbooks in Downloads; the Data Hub can load the same workbooks in the browser.
+
 ## Data Hub (in-app uploads)
 `assets/hub.js`: parses Sellerboard xlsx (zip + DecompressionStream, no library) or csv, planner CSVs and allocation CSVs in the browser, validates (one day per file, ≥200 rows, identity check), merges into `window.DCC`, persists in IndexedDB (`deal-mis` / `uploads`), and re-merges on load before the first render. Per-browser only — `/deal-update` is the shared path. Test: scratchpad `test_hub.cjs` pattern (setInputFiles on `.drop input[type=file]`).
 

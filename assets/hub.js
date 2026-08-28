@@ -32,25 +32,35 @@
     return { async read(name) { const f = files[name]; if (!f) return null; const lh = f.off; const nlen = dv.getUint16(lh + 26, true), elen = dv.getUint16(lh + 28, true); const start = lh + 30 + nlen + elen; const data = b.subarray(start, start + f.csize); const out = f.method === 8 ? await inflateRaw(data) : data; return new TextDecoder().decode(out); }, names: Object.keys(files) };
   }
   const unxml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-  async function parseXlsx(buf) {
+  async function sheetList(z) {
+    const wb = await z.read('xl/workbook.xml'); const rels = await z.read('xl/_rels/workbook.xml.rels'); if (!wb) return [];
+    const relMap = {}; if (rels) for (const m of rels.matchAll(/<Relationship\b[^>]*>/g)) { const id = (m[0].match(/Id="([^"]+)"/) || [])[1], tg = (m[0].match(/Target="([^"]+)"/) || [])[1]; if (id && tg) relMap[id] = tg.replace(/^\/?(xl\/)?/, 'xl/'); }
+    return [...wb.matchAll(/<sheet\b[^>]*>/g)].map(m => ({ name: unxml((m[0].match(/name="([^"]+)"/) || [])[1] || ''), path: relMap[(m[0].match(/r:id="([^"]+)"/) || [])[1]] }));
+  }
+  async function parseXlsx(buf, sheetName) {
     const z = await unzip(buf);
     const ss = []; const sst = await z.read('xl/sharedStrings.xml');
     if (sst) for (const m of sst.matchAll(/<si>([\s\S]*?)<\/si>/g)) ss.push(unxml([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
-    const sheetName = z.names.filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]))[0];
-    const xml = await z.read(sheetName); if (!xml) throw new Error('no worksheet in file');
+    let path = null;
+    if (sheetName) { const sh = (await sheetList(z)).find(x => x.name === sheetName); if (!sh) throw new Error(`Sheet "${sheetName}" not found in this workbook`); path = sh.path; }
+    else path = z.names.filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]))[0];
+    const xml = await z.read(path); if (!xml) throw new Error('no worksheet in file');
     const colIdx = (ref) => { let n = 0; for (const ch of ref.replace(/\d+/g, '')) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
     const rows = [];
+    const serial = (v) => { if (typeof v !== 'number') return v; const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5); return d.toISOString().slice(0, 10); };
     for (const rm of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
       const row = [];
       for (const cm of rm[1].matchAll(/<c r="([A-Z]+\d+)"([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
         const attrs = cm[2] || '', inner = cm[3] || ''; const t = (attrs.match(/t="(\w+)"/) || [])[1]; let v = (inner.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
         if (t === 's') v = ss[+v]; else if (t === 'inlineStr') v = unxml((inner.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || ''); else if (t === 'str' || t === 'b') v = v == null ? '' : unxml(v); else if (v != null && v !== '') v = +v;
+        if (/s="\d+"/.test(attrs) && typeof v === 'number' && v > 40000 && v < 60000 && Number.isInteger(v)) v = serial(v);
         row[colIdx(cm[1])] = v == null ? '' : v;
       }
       if (row.some(x => x !== '' && x != null)) rows.push(row);
     }
-    return { hdr: rows[0].map(x => String(x)), rows: rows.slice(1) };
+    return { hdr: (rows[0] || []).map(x => String(x)), rows: rows.slice(1), all: rows };
   }
+  H.parseXlsx = parseXlsx; H.sheetList = async (buf) => (await sheetList(await unzip(buf))).map(x => x.name);
   async function readTable(file) {
     if (/\.xlsx$/i.test(file.name)) return parseXlsx(await file.arrayBuffer());
     return parseCsv(await file.text());
@@ -106,13 +116,42 @@
     for (const deal of deals) { mergeAlloc(deal, byDeal[deal]); await put('alloc:' + deal, { kind: 'alloc', deal, file: file.name, at: new Date().toISOString(), rows: byDeal[deal] }); }
     return { deals, rows: t.rows.length };
   };
+  const dash = () => { D.dashboard = D.dashboard || { rows: [] }; return D.dashboard; };
+  function mergeCosts(rows) { const bySku = new Map(D.skus.map(x => [x.sku, x])); let added = 0, upd = 0; rows.forEach(r => { let x = bySku.get(r.sku); if (!x) { x = { sku: r.sku, asin: r.asin, tag: r.tag, price: r.price, fba: r.fba, cogs: r.cogs, cogs_basis: 'upload' }; D.skus.push(x); bySku.set(r.sku, x); added++; } else { let ch = false; for (const k of ['price', 'fba', 'cogs']) { if (r[k] != null && !(r.fillOnly && x[k] != null) && x[k] !== r[k]) { x[k] = r[k]; ch = true; } } for (const k of ['l30', 'fba_on_hand', 'stock_asof', 'brand', 'product', 'size', 'color']) if (r[k] != null) x[k] = r[k]; if (!x.tag && r.tag) x.tag = r.tag; if (!x.asin && r.asin) x.asin = r.asin; if (ch) upd++; } }); SB.asins.forEach(a => { if (!a[2] || a[2] === '?') { const x = bySku.get(a[1]); if (x && x.tag) a[2] = x.tag; } }); return { added, upd }; }
+  function mergeDashboard(rows) { const d = dash(); const key = (r) => r.date + '|' + r.deal + '|' + (r.sku || r.asin); const seen = new Set(rows.map(key)); d.rows = d.rows.filter(r => !seen.has(key(r))).concat(rows); }
+  function mergeHist(rows) { D.price_history = D.price_history || []; const by = new Map(D.price_history.filter(x => x.sku).map(x => [x.sku, x])); let n = 0; rows.forEach(r => { const x = by.get(r.sku); if (!x) { D.price_history.push({ sku: r.sku, deal_price: r.price }); n++; } else if (x.deal_price == null) { x.deal_price = r.price; n++; } }); return n; }
+  function mergeAis(rows) { const idx = new Map(SB.asins.map((a, i) => [a[0], i])); const skuTag = new Map(D.skus.map(x => [x.sku, x.tag])); let n = 0; rows.forEach(r => { let i = idx.get(r.asin); if (i == null) { SB.asins.push([r.asin, r.sku || r.asin, skuTag.get(r.sku) || r.tag || '?']); i = SB.asins.length - 1; idx.set(r.asin, i); } const cur = SB.age[String(i)]; if (!cur || cur[1] === 0) { SB.age[String(i)] = [r.charge, r.units, cur ? cur[2] : 0, cur ? cur[3] : 0, cur ? cur[4] : 0, r.units ? r.charge / r.units : 0]; n++; } }); return n; }
+  const dateOf = (v) => { if (!v) return null; if (typeof v === 'string' && /^\d{4}-\d\d-\d\d/.test(v)) return v.slice(0, 10); if (typeof v === 'number') { return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5).toISOString().slice(0, 10); } const d = new Date(v); return isNaN(d) ? null : d.toISOString().slice(0, 10); };
+  const nv = (v) => v === '' || v == null || v === '-' ? null : num(v);
+  H.ingestWorkbook = async (file, since) => {
+    since = since || '2026-06-01'; const buf = await file.arrayBuffer(); const names = await H.sheetList(buf); const out = []; const isTracker = names.includes('Deal Dashboard') && names.includes('Deal Allocation'); const isDA = names.includes('Deals Financials') || names.includes('Updated COGS');
+    if (!isTracker && !isDA) throw new Error(`Not a tracker or Deal Analysis workbook. Sheets seen: ${names.slice(0, 8).join(', ')}…`);
+    const costs = []; const key = { kind: 'workbook', file: file.name, at: new Date().toISOString(), tracker: isTracker, da: isDA, dashboard: [], costs: [], alloc: [], hist: [], ais: [] };
+    if (names.includes('Cost Master')) { const t = await parseXlsx(buf, 'Cost Master'); t.all.forEach(r => { if (r[1] && r[2] && nv(r[3]) != null && String(r[0]).length <= 8 && r[0] !== 'Tag') { let asin = String(r[1]).trim(), sku = String(r[2]).trim(); if (/^B0[A-Z0-9]{8}$/.test(sku) && !/^B0[A-Z0-9]{8}$/.test(asin)) [asin, sku] = [sku, asin]; if (!/^B0[A-Z0-9]{8}$/.test(sku)) costs.push({ tag: String(r[0]), asin, sku, price: nv(r[3]), fba: nv(r[4]), cogs: nv(r[5]) }); } }); }
+    if (isDA && names.includes('Updated COGS')) { const t = await parseXlsx(buf, 'Updated COGS'); const hi = {}; t.hdr.forEach((x, i) => hi[x] = i); t.rows.forEach(r => { const sku = r[hi['sku']]; if (!sku) return; costs.push({ sku: String(sku).trim(), fba: nv(r[hi['expected-fulfillment-fee-per-unit']]), cogs: nv(r[hi['cogs_per_unit']]), l30: nv(r[hi['l30_units_sold']]), fba_on_hand: nv(r[hi['fba_on_hand_units_LIVE']]), stock_asof: dateOf(r[hi['as_of_date']]), brand: r[hi['brand']] || null, product: r[hi['product']] || null, size: r[hi['size']] || null, color: r[hi['color']] || null, fillOnly: true }); }); }
+    if (costs.length) { const r = mergeCosts(costs); key.costs = costs; out.push(`cost master: ${costs.length} rows (${r.added} new SKUs, ${r.upd} updated)`); }
+    if (isTracker) {
+      const t = await parseXlsx(buf, 'Deal Dashboard'); const rows = [];
+      t.all.forEach(r => { const date = dateOf(r[0]); if (!date || date < since || r.length < 27) return; const asin = r[16] ? String(r[16]) : null, sku = r[17] ? String(r[17]) : null; if (!asin && !sku) return; rows.push({ date, tag: r[1] ? String(r[1]) : null, deal: r[2] ? String(r[2]) : null, asin, sku, ref: nv(r[18]), max_deal: nv(r[19]), final: nv(r[20]), your_price: nv(r[21]), min_price: nv(r[22]), disc: nv(r[23]), stock: nv(r[24]), min_commit: nv(r[25]), status: r[26] ? String(r[26]) : null, action: r[27] ? String(r[27]) : null, manual: nv(r[15]) }); });
+      mergeDashboard(rows); key.dashboard = rows; out.push(`deal dashboard: ${rows.length} rows since ${since} (${[...new Set(rows.map(r => r.deal).filter(Boolean))].slice(-6).join(', ')})`);
+      const a = await parseXlsx(buf, 'Deal Allocation'); const byDeal = {}; a.all.forEach(r => { if (r[0] && /^D\d{3}$/.test(String(r[0])) && r[1]) (byDeal[String(r[0])] = byDeal[String(r[0])] || []).push({ deal: String(r[0]), sku: String(r[1]).trim(), alloc: nv(r[2]) || 0, notes: r[3] || null }); });
+      // tracker ids that collide with the reconciled calendar: match by tag + type + start
+      if (names.includes('Deal Calendar')) { const c = await parseXlsx(buf, 'Deal Calendar'); const mine = {}; D.deals.rows.forEach(d => { mine[d.tag + '|' + d.type + '|' + d.start] = mine[d.tag + '|' + d.type + '|' + d.start] || d.id; }); const remap = {}; c.all.forEach(r => { if (r[0] && /^D\d{3}$/.test(String(r[0])) && r[3]) { const k = String(r[1]) + '|' + String(r[2]) + '|' + dateOf(r[3]); if (mine[k] && mine[k] !== String(r[0])) remap[String(r[0])] = mine[k]; } }); Object.keys(remap).forEach(t => { if (byDeal[t]) { byDeal[remap[t]] = byDeal[t].map(x => ({ ...x, deal: remap[t] })); delete byDeal[t]; } }); if (Object.keys(remap).length) out.push('id remap ' + JSON.stringify(remap)); }
+      Object.keys(byDeal).forEach(deal => mergeAlloc(deal, byDeal[deal])); key.alloc = Object.values(byDeal).flat(); out.push(`allocations: ${key.alloc.length} rows for ${Object.keys(byDeal).length} deals`);
+    }
+    if (isDA) {
+      if (names.includes('Historical Deal price')) { const t = await parseXlsx(buf, 'Historical Deal price'); const rows = []; t.all.forEach(r => { if (r[0] && nv(r[1]) != null && r[0] !== 'SKU') rows.push({ sku: String(r[0]).trim(), price: nv(r[1]) }); }); key.hist = rows; out.push(`historical deal prices: ${mergeHist(rows)} filled`); }
+      if (names.includes('Estimated Upcoming Month charge')) { const t = await parseXlsx(buf, 'Estimated Upcoming Month charge'); const rows = []; t.all.forEach(r => { if (r.length >= 6 && r[2] && r[2] !== 'Asin' && nv(r[4]) != null && nv(r[5]) != null) rows.push({ tag: r[0] ? String(r[0]) : null, asin: String(r[2]), sku: r[3] ? String(r[3]) : null, charge: nv(r[4]), units: nv(r[5]) }); }); key.ais = rows; out.push(`AIS: ${mergeAis(rows)} ASINs filled`); }
+    }
+    await put('wb:' + file.name, key); return { notes: out };
+  };
   H.addSc = async (deal, rec) => { mergeSc(deal, rec); await put(`sc:${deal}:${rec.date}`, { kind: 'sc', deal, at: new Date().toISOString(), rec }); return rec; };
 
   // ---------- load persisted uploads on start ----------
   H.items = [];
   H.init = async () => {
     try { const items = await all(); H.items = items.map(i => ({ key: i.key, ...i.val })).sort((a, b) => (a.kind + (a.date || a.deal || '')).localeCompare(b.kind + (b.date || b.deal || '')));
-      for (const it of H.items) { if (it.kind === 'sellerboard') mergeSbDay(it.date, it.recs); else if (it.kind === 'planner') mergePlanner(it.deal, it.rows); else if (it.kind === 'alloc') mergeAlloc(it.deal, it.rows); else if (it.kind === 'sc') mergeSc(it.deal, it.rec); }
+      for (const it of H.items) { if (it.kind === 'sellerboard') mergeSbDay(it.date, it.recs); else if (it.kind === 'planner') mergePlanner(it.deal, it.rows); else if (it.kind === 'alloc') mergeAlloc(it.deal, it.rows); else if (it.kind === 'sc') mergeSc(it.deal, it.rec); else if (it.kind === 'workbook') { if (it.costs && it.costs.length) mergeCosts(it.costs); if (it.dashboard && it.dashboard.length) mergeDashboard(it.dashboard); (it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {}) && Object.entries((it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {})).forEach(([deal, rows]) => mergeAlloc(deal, rows)); if (it.hist && it.hist.length) mergeHist(it.hist); if (it.ais && it.ais.length) mergeAis(it.ais); } }
     } catch (e) { H.error = e.message; H.items = []; }
     return H.items;
   };
