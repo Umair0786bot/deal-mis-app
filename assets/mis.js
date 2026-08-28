@@ -13,7 +13,7 @@
   const dshort = C.dshort;
   const dmid = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const window_ = (d) => d.days === 1 ? dlong(d.start) : `${dmid(d.start)} – ${dmid(d.end)}, ${d.end.slice(0, 4)}`;
-  const today = S.today;
+  const today = [S.today, new Date().toISOString().slice(0, 10)].sort().pop();
   const TAGCOL = ['#2563EB', '#F59E0B', '#16A34A', '#7C3AED', '#DB2777', '#0891B2', '#DC2626', '#65A30D'];
   const mainTags = ['B4', 'B6', 'S4', 'S6', 'SS4', 'SSB6', 'C4', 'BT'];
   const tagColor = (t) => { const i = mainTags.indexOf(t); return i >= 0 ? TAGCOL[i] : '#98A2B3'; };
@@ -43,7 +43,7 @@
     dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></svg>',
   };
 
-  const state = { asOf: E.lastDate, basis: 'elapsed', months: 12, chart: 'sales', cum: true, covFrom: null, covTo: null, covType: 'all', range: '2m', regF: 'all', regQ: '', planDisc: null, planUp: null, preset: 'measured', plannerDeal: null, plannerType: null, skuF: 'all', stopF: 'all', histF: 'all', guide: false };
+  const state = { get asOf() { return this._asOf || E.lastDate; }, set asOf(v) { this._asOf = v; }, _asOf: null, basis: 'elapsed', months: 12, chart: 'sales', cum: true, covFrom: null, covTo: null, covType: 'all', range: '2m', regF: 'all', regQ: '', planDisc: null, planUp: null, preset: 'measured', plannerDeal: null, plannerType: null, skuF: 'all', stopF: 'all', histF: 'all', guide: false };
   try { const s = JSON.parse(localStorage.getItem('deal-mis') || '{}'); if (s.basis) state.basis = s.basis; if (s.guide) state.guide = true; } catch (e) { }
   const persist = () => { try { localStorage.setItem('deal-mis', JSON.stringify({ basis: state.basis, guide: state.guide })); } catch (e) { } };
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
@@ -123,6 +123,7 @@
     { path: 'ppc', label: 'PPC & TACOS' },
     { path: 'storage', label: 'Storage & LTSF' },
     { path: 'process', label: 'Process & Automation' },
+    { path: 'data', label: 'Data Hub', cnt: () => { const n = (window.Hub && window.Hub.items || []).length; return n ? { n, cls: 'live' } : null; } },
   ];
   function renderShell(route) {
     $('#hdr').innerHTML = `<div class="hdr"><div class="ttl"><div class="logo">MIS</div><div><h1>Deal MIS</h1><div class="sub">Deal Management Information System · the deal tracker, analysis files and scorecards as one app · Amazon US</div></div></div>
@@ -135,7 +136,7 @@
     $('#channels').innerHTML = `<div class="channels"><div class="chan on"><div class="ic">${I.cart}</div><div><b>Amazon</b><span>Amazon deals &amp; coupons · US</span></div><div class="chk">${I.check}</div></div><div class="chan off"><div class="ic">${I.tiktok}</div><div><b>TikTok</b><span>0 campaigns · not tracked here yet</span></div></div><div class="chan off"><div class="ic">${I.store}</div><div><b>DTC</b><span>Coming soon</span></div></div></div>`;
     $('#tabs').innerHTML = `<div class="tabs" role="tablist">${TABS.map(t => { const c = t.cnt ? t.cnt() : null; return `<button role="tab" aria-selected="${route === t.path}" data-p="${t.path}">${t.label}${c ? `<span class="cnt ${c.cls}">${c.n}</span>` : ''}</button>`; }).join('')}</div>`;
     $$('#tabs button').forEach(b => b.addEventListener('click', () => { location.hash = '#/' + b.dataset.p; }));
-    $('#foot').innerHTML = `<span>Data snapshot ${dlong(S.built)} · Sellerboard feed ${dshort(E.firstDate)} – ${dshort(E.lastDate)} · ${D.sellerboard.asins.length} ASINs · ${D.deals.rows.length} deals (D001–D137) reconciled with Seller Central 21 Aug.</span><span>Rules: ${S.baseline_days} clean baseline days · fee $${S.fee_day}/day + ${pct(S.fee_pct, 0)}, cap $${int(S.fee_cap)} · net = Sellerboard net − fee · STOP at ${pct(S.stop_line, 0)} of safe allocation.</span>`;
+    const up = (window.Hub && window.Hub.items || []).filter(i => i.kind === 'sellerboard').length; $('#foot').innerHTML = `<span>Data snapshot ${dlong(S.built)}${up ? ` + ${up} day${up > 1 ? 's' : ''} uploaded in this browser` : ''} · Sellerboard feed ${dshort(E.firstDate)} – ${dshort(E.lastDate)} · ${D.sellerboard.asins.length} ASINs · ${D.deals.rows.length} deals (D001–D137) reconciled with Seller Central 21 Aug.</span><span>Rules: ${S.baseline_days} clean baseline days · fee $${S.fee_day}/day + ${pct(S.fee_pct, 0)}, cap $${int(S.fee_cap)} · net = Sellerboard net − fee · STOP at ${pct(S.stop_line, 0)} of safe allocation.</span>`;
   }
 
   // ---------- alerts (shared) ----------
@@ -638,6 +639,43 @@
     detail(5);
   };
 
+
+  // ---------- data hub ----------
+  pages.data = function (page) {
+    const Hb = window.Hub; const items = (Hb && Hb.items) || [];
+    const sbDays = items.filter(i => i.kind === 'sellerboard').sort((a, b) => b.date.localeCompare(a.date));
+    const liveDeals = D.deals.rows.filter(d => E.status(d, today) === 'live');
+    const yday = E.addDays(today, -1);
+    page.innerHTML = `<div class="view">
+      <div class="page-head"><div><h2 style="font-size:16px">Data Hub</h2><p>Drop the day's exports here and every page recalculates. Files are checked before they are accepted (one day per file, 400+ ASIN rows, sales − ads − fees − COGS − refunds = net) and remembered in this browser, so they are still here tomorrow. To make an upload permanent for everyone, run <b>/deal-update</b> with the same file in Downloads.</p></div><div class="toolbar">${items.length ? `<button class="btn danger" id="reset">Remove all uploads</button>` : ''}</div></div>
+      ${!Hb || !Hb.supported() ? `<div class="banner bad">${I.warn}<div><b>This browser cannot parse uploads here</b> (needs IndexedDB and DecompressionStream — Chrome, Edge or Safari 16.4+).</div></div>` : Hb.error ? `<div class="banner warn">${I.warn}<div>Stored uploads could not be read: ${esc(Hb.error)}</div></div>` : ''}
+      <div class="kpis stagger">${kpi('Feed ends', dlong(E.lastDate), `${E.dates.length} days · ${D.sellerboard.asins.length} ASINs`)}${kpi('Days uploaded here', sbDays.length, sbDays.length ? sbDays.slice(0, 3).map(i => dshort(i.date)).join(', ') + (sbDays.length > 3 ? '…' : '') : 'none yet', sbDays.length ? 'good' : '')}${kpi('Feed lag', E.diffDays(E.lastDate, today) + 'd', E.diffDays(E.lastDate, today) > 1 ? 'upload yesterday\'s Sellerboard export' : 'up to date', E.diffDays(E.lastDate, today) > 1 ? 'warn' : 'good')}${kpi('Planner / allocation uploads', items.filter(i => i.kind === 'planner').length + ' / ' + items.filter(i => i.kind === 'alloc').length)}${kpi('Seller Central readings', items.filter(i => i.kind === 'sc').length, 'typed in from Manage Promotions')}</div>
+      <div class="grid g3" style="margin-top:12px">
+        <div class="card"><div class="card-head"><div><h2>1 · Sellerboard day</h2><span class="sub">Dashboard → Products → group by ASIN → custom range = one day → export (xlsx or csv). The date is read from the filename.</span></div></div><div class="drop" data-kind="sellerboard"><span class="lbl">Drop the export here, or click to choose</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Day (only if the filename has no date)</label><input type="date" id="sbdate" value="${yday}"></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>2 · Planner pull</h2><span class="sub">deal-allocation-&lt;TAG&gt;-&lt;date&gt;.csv from the allocation planner. Attached to the next deal of that parent unless you pick one.</span></div></div><div class="drop" data-kind="planner"><span class="lbl">Drop the planner CSV here</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Attach to deal</label><select id="pldeal"><option value="">auto (next deal of that parent)</option>${D.deals.rows.filter(d => d.end >= today).sort((a, b) => a.start.localeCompare(b.start)).map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))} · ${dshort(d.start)}</option>`).join('')}</select></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>3 · Safe allocation</h2><span class="sub">CSV with Deal ID, SKU, Safe Allocation (the Deal Allocation tab). Switches on the STOP line for that deal.</span></div></div><div class="drop" data-kind="alloc"><span class="lbl">Drop the allocation CSV here</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Deal (if the file has no Deal ID column)</label><select id="aldeal"><option value="">from the file</option>${D.deals.rows.filter(d => d.end >= today).sort((a, b) => a.start.localeCompare(b.start)).map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))}</option>`).join('')}</select></div></div></div>
+      </div>
+      <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>4 · Seller Central reading</h2><span class="sub">From Manage Promotions (no API): sales, units, glance views, conversion for a live deal. One reading per day; the deal page shows the day-over-day log.</span></div></div>
+        <div class="controls"><div class="ctl"><label>Deal</label><select id="scdeal">${liveDeals.map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))}</option>`).join('') || '<option value="">no live deals</option>'}</select></div><div class="ctl"><label>Read on</label><input type="date" id="scdate" value="${today}" style="min-width:140px"></div><div class="ctl"><label>Sales $</label><input type="number" id="scsales" step="0.01" placeholder="40410.22" style="min-width:120px"></div><div class="ctl"><label>Units sold</label><input type="number" id="scunits" placeholder="540" style="min-width:100px"></div><div class="ctl"><label>Glance views</label><input type="number" id="scglance" placeholder="10021" style="min-width:100px"></div><div class="ctl"><label>Conversion %</label><input type="number" id="scconv" step="0.1" placeholder="5.4" style="min-width:100px"></div><button class="btn primary" id="scsave">Save reading</button></div></div>
+      <div id="dlog" class="stack" style="margin-top:12px"></div>
+      <div class="section"><h2>Uploads stored in this browser</h2><span class="sub">${items.length} item${items.length === 1 ? '' : 's'} · remove one to fall back to the published data for that day/deal</span></div>
+      <div id="upt"></div></div>`;
+    state.hubLog = state.hubLog || []; const paint = () => { $('#dlog').innerHTML = state.hubLog.slice(0, 8).map(l => `<div class="alert ${l.cls}"><div class="ic">${l.cls === 'good' ? '✓' : '!'}</div><div><b>${esc(l.title)}</b><div class="meta">${esc(l.meta)}</div></div></div>`).join(''); }; paint();
+    const log = (cls, title, meta) => { state.hubLog.unshift({ cls, title, meta }); paint(); };
+    const after = async () => { E.reindex(); await Hb.refresh(); render(); };
+    $$('.drop').forEach(z => {
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = z.dataset.kind === 'sellerboard' ? '.xlsx,.csv' : '.csv'; inp.style.display = 'none'; z.appendChild(inp);
+      z.addEventListener('click', () => inp.click()); z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over'));
+      const lbl = z.querySelector('.lbl'); const idle = lbl.textContent; const handle = async (file) => { if (!file) return; lbl.textContent = 'Reading ' + file.name + '…'; try { let r; if (z.dataset.kind === 'sellerboard') { r = await Hb.ingestSellerboard(file, $('#sbdate').value); toast(`Loaded ${dshort(r.day)}`); log('good', `${file.name} → ${dlong(r.day)}`, `${r.rows} ASIN rows · ${int(r.units)} units · ${money(r.sales)} sales · ${r.newAsins} new ASINs · ${r.mismatches} identity mismatches. Every page now reads through ${dshort(r.day)}.`); } else if (z.dataset.kind === 'planner') { r = await Hb.ingestPlanner(file, $('#pldeal').value || null); toast('Planner rows loaded'); log('good', `${file.name} → ${r.deal}`, `${r.rows} SKUs · safe allocation total ${int(r.safe)}. Planner and stop lines for ${r.deal} now use this pull.`); } else { r = await Hb.ingestAlloc(file, $('#aldeal').value || null); toast('Allocations loaded'); log('good', `${file.name} → ${r.deals.join(', ')}`, `${r.rows} rows. STOP lines switched on.`); } await after(); } catch (err) { lbl.textContent = idle; inp.value = ''; log('bad', `${file.name} rejected`, err.message); } };
+      z.addEventListener('drop', e => { e.preventDefault(); z.classList.remove('over'); handle(e.dataTransfer.files[0]); });
+      inp.addEventListener('change', () => handle(inp.files[0]));
+    });
+    $('#scsave').addEventListener('click', async () => { const deal = $('#scdeal').value; if (!deal) return; const rec = { date: $('#scdate').value, sales: $('#scsales').value === '' ? null : +$('#scsales').value, units: $('#scunits').value === '' ? null : +$('#scunits').value, glance: $('#scglance').value === '' ? null : +$('#scglance').value, conv: $('#scconv').value === '' ? null : +$('#scconv').value / 100 }; if (rec.sales == null && rec.units == null) { toast('Enter at least sales or units'); return; } await Hb.addSc(deal, rec); toast(`Saved ${deal} reading for ${dshort(rec.date)}`); await after(); });
+    if ($('#reset')) $('#reset').addEventListener('click', async () => { if (!confirm('Remove every upload stored in this browser and go back to the published data?')) return; await Hb.reset(); location.reload(); });
+    $('#upt').appendChild(table([{ key: 'kind', label: 'Type', fmt: v => `<span class="pill ${v === 'sellerboard' ? 'info' : v === 'sc' ? 'purple' : 'outline'}">${v}</span>` }, { key: 'what', label: 'Covers', val: r => r.kind === 'sellerboard' ? r.date : r.kind === 'sc' ? `${r.deal} · ${r.rec.date}` : r.deal, fmt: (v, r) => r.kind === 'sellerboard' ? dlong(v) : esc(v) }, { key: 'file', label: 'File', fmt: (v, r) => v ? `<span class="mono xs">${esc(v)}</span>` : r.kind === 'sc' ? `sales ${money(r.rec.sales)} · units ${int(r.rec.units)}` : '' }, { key: 'size', label: 'Rows', num: true, val: r => r.recs ? r.recs.length : r.rows ? r.rows.length : 1 }, { key: 'at', label: 'Uploaded', fmt: v => v ? new Date(v).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '' }, { key: 'key', label: '', fmt: v => `<button class="btn sm danger" data-rm="${esc(v)}">Remove</button>` }], items, { sort: 'at', empty: 'Nothing uploaded in this browser yet.' }));
+    $$('#upt [data-rm]').forEach(b => b.addEventListener('click', async () => { await Hb.remove(b.dataset.rm); toast('Removed — reloading the published data'); location.reload(); }));
+  };
+
   // ---------- CSV download ----------
   function downloadCsv(name, cols, rows) {
     const q = (v) => { if (v == null) return ''; const s = typeof v === 'number' ? (Math.round(v * 10000) / 10000).toString() : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -660,5 +698,5 @@
     if (route !== lastRoute) window.scrollTo({ top: 0 }); lastRoute = route;
   }
   window.addEventListener('hashchange', render);
-  render();
+  (async () => { if (window.Hub) { try { await window.Hub.init(); if (window.Hub.items.length) E.reindex(); } catch (e) { console.error(e); } } render(); })();
 })();

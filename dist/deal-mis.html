@@ -1038,6 +1038,133 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
 
 </script>
 <script>
+/* Deal MIS — Data Hub: in-browser uploads (Sellerboard xlsx/csv, planner CSV, allocation CSV, Seller Central readings).
+   Parsed here, validated, merged into window.DCC and kept in IndexedDB so they survive reloads.
+   Uploads live in THIS browser only; /deal-update makes the same file permanent for everyone. */
+(function () {
+  const D = window.DCC; const H = {};
+  const DB = 'deal-mis', STORE = 'uploads';
+  function idb() { return new Promise((res, rej) => { try { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => r.result.createObjectStore(STORE); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); }
+  async function tx(mode, fn) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction(STORE, mode); const s = t.objectStore(STORE); const out = fn(s); t.oncomplete = () => res(out && out.result !== undefined ? out.result : out); t.onerror = () => rej(t.error); }); }
+  const put = (k, v) => tx('readwrite', s => s.put(v, k));
+  const del = (k) => tx('readwrite', s => s.delete(k));
+  const all = () => tx('readonly', s => { const req = s.openCursor(); const out = []; req.onsuccess = () => { const c = req.result; if (c) { out.push({ key: c.key, val: c.value }); c.continue(); } }; return { get result() { return out; } }; });
+  const clear = () => tx('readwrite', s => s.clear());
+
+  // ---------- parsers ----------
+  function parseCsv(text) {
+    const lines = text.replace(/^﻿/, '').replace(/\r/g, '').split('\n').filter(l => l.trim());
+    const parse = (l) => { const out = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i]; if (ch === '"') { if (q && l[i + 1] === '"') { cur += '"'; i++; } else q = !q; } else if (ch === ',' && !q) { out.push(cur); cur = ''; } else cur += ch; } out.push(cur); return out.map(s => s.trim()); };
+    return { hdr: parse(lines[0]), rows: lines.slice(1).map(parse) };
+  }
+  const u8 = (buf) => new Uint8Array(buf);
+  async function inflateRaw(bytes) { const ds = new DecompressionStream('deflate-raw'); const stream = new Blob([bytes]).stream().pipeThrough(ds); return new Uint8Array(await new Response(stream).arrayBuffer()); }
+  async function unzip(buf) {
+    const b = u8(buf); const dv = new DataView(buf); let eocd = -1;
+    for (let i = b.length - 22; i >= Math.max(0, b.length - 70000); i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+    if (eocd < 0) throw new Error('not a zip / xlsx file');
+    const n = dv.getUint16(eocd + 10, true), cd = dv.getUint32(eocd + 16, true); const files = {}; let p = cd;
+    for (let k = 0; k < n; k++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+      const name = new TextDecoder().decode(b.subarray(p + 46, p + 46 + nlen)); files[name] = { method, csize, off }; p += 46 + nlen + elen + clen;
+    }
+    return { async read(name) { const f = files[name]; if (!f) return null; const lh = f.off; const nlen = dv.getUint16(lh + 26, true), elen = dv.getUint16(lh + 28, true); const start = lh + 30 + nlen + elen; const data = b.subarray(start, start + f.csize); const out = f.method === 8 ? await inflateRaw(data) : data; return new TextDecoder().decode(out); }, names: Object.keys(files) };
+  }
+  const unxml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  async function parseXlsx(buf) {
+    const z = await unzip(buf);
+    const ss = []; const sst = await z.read('xl/sharedStrings.xml');
+    if (sst) for (const m of sst.matchAll(/<si>([\s\S]*?)<\/si>/g)) ss.push(unxml([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
+    const sheetName = z.names.filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]))[0];
+    const xml = await z.read(sheetName); if (!xml) throw new Error('no worksheet in file');
+    const colIdx = (ref) => { let n = 0; for (const ch of ref.replace(/\d+/g, '')) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+    const rows = [];
+    for (const rm of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+      const row = [];
+      for (const cm of rm[1].matchAll(/<c r="([A-Z]+\d+)"([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const attrs = cm[2] || '', inner = cm[3] || ''; const t = (attrs.match(/t="(\w+)"/) || [])[1]; let v = (inner.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+        if (t === 's') v = ss[+v]; else if (t === 'inlineStr') v = unxml((inner.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || ''); else if (t === 'str' || t === 'b') v = v == null ? '' : unxml(v); else if (v != null && v !== '') v = +v;
+        row[colIdx(cm[1])] = v == null ? '' : v;
+      }
+      if (row.some(x => x !== '' && x != null)) rows.push(row);
+    }
+    return { hdr: rows[0].map(x => String(x)), rows: rows.slice(1) };
+  }
+  async function readTable(file) {
+    if (/\.xlsx$/i.test(file.name)) return parseXlsx(await file.arrayBuffer());
+    return parseCsv(await file.text());
+  }
+  const num = (v) => { if (v == null || v === '' || v === '-') return 0; const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[$,%\s]/g, '')); return isNaN(n) ? 0 : n; };
+  const cents = (v) => Math.round(num(v) * 100);
+  const findCol = (hdr, ...names) => { const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, ''); const H2 = hdr.map(norm); for (const n of names) { const i = H2.indexOf(norm(n)); if (i >= 0) return i; } for (const n of names) { const i = H2.findIndex(h => h.startsWith(norm(n))); if (i >= 0) return i; } return -1; };
+  const fileDate = (name) => { const m = name.match(/(\d\d)_(\d\d)_(\d{4})-(\d\d)_(\d\d)_(\d{4})/); if (!m) return { date: null, multi: false }; const a = `${m[3]}-${m[2]}-${m[1]}`, b = `${m[6]}-${m[5]}-${m[4]}`; return { date: a, multi: a !== b, to: b }; };
+
+  // ---------- merge into DCC ----------
+  const SB = D.sellerboard;
+  function mergeSbDay(day, recs) {
+    // recs: [[asin, sku, units, sales, ppc, ads, net, bsr, fees, cogs, refunds]] (money in cents)
+    if (!SB.dates.includes(day)) { const old = SB.dates.slice(); SB.dates.push(day); SB.dates.sort(); const map = old.map(d => SB.dates.indexOf(d)); SB.rows.forEach(r => { r[0] = map[r[0]]; }); }
+    const di = SB.dates.indexOf(day); SB.rows = SB.rows.filter(r => r[0] !== di);
+    const asinIdx = new Map(SB.asins.map((a, i) => [a[0], i])); const skuTag = new Map(D.skus.map(s => [s.sku, s.tag])); let newA = 0;
+    recs.forEach(r => { let i = asinIdx.get(r[0]); if (i == null) { SB.asins.push([r[0], r[1] || r[0], skuTag.get(r[1]) || '?']); i = SB.asins.length - 1; asinIdx.set(r[0], i); newA++; } SB.rows.push([di, i, r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10]]); });
+    SB.rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]); return newA;
+  }
+  function mergePlanner(deal, rows) { D.planner = D.planner.filter(p => p.deal !== deal).concat(rows); }
+  function mergeAlloc(deal, rows) { D.allocations = D.allocations.filter(a => a.deal !== deal).concat(rows); }
+  function mergeSc(deal, rec) { const d = D.deals.rows.find(x => x.id === deal); if (!d) return; d.sc_history = (d.sc_history || []).filter(h => h.date !== rec.date).concat([rec]).sort((a, b) => a.date.localeCompare(b.date)); const last = d.sc_history[d.sc_history.length - 1]; d.sc_sales = last.sales; d.sc_units = last.units; d.sc_glance = last.glance; d.sc_conv = last.conv; d.sc_asof = last.date; }
+
+  // ---------- ingest (validate -> merge -> persist) ----------
+  H.ingestSellerboard = async (file, dateOverride) => {
+    const t = await readTable(file); const hdr = t.hdr;
+    const c = { asin: findCol(hdr, 'ASIN'), sku: findCol(hdr, 'SKU'), units: findCol(hdr, 'Units'), sales: findCol(hdr, 'Sales'), ppc: findCol(hdr, 'Sponsored products (PPC)', 'Sponsored products'), ads: findCol(hdr, 'Ads'), net: findCol(hdr, 'Net profit'), bsr: findCol(hdr, 'BSR'), fees: findCol(hdr, 'Amazon fees'), cogs: findCol(hdr, 'Cost of Goods'), refunds: findCol(hdr, 'Refund cost', 'Refund сost', 'Refund') };
+    for (const k of ['asin', 'units', 'sales', 'ads', 'net', 'fees', 'cogs']) if (c[k] < 0) throw new Error(`Column "${k}" not found — is this the Sellerboard Products export grouped by ASIN? Columns seen: ${hdr.slice(0, 8).join(', ')}…`);
+    const fd = fileDate(file.name); if (fd.multi) throw new Error(`This export covers ${fd.date} to ${fd.to}. The app needs one day per file — export each day separately.`);
+    const day = fd.date || dateOverride; if (!day) throw new Error('The filename has no date — pick the day this export covers.');
+    const recs = t.rows.filter(r => r[c.asin]).map(r => [String(r[c.asin]).trim(), c.sku >= 0 ? String(r[c.sku] || '').trim() : '', Math.round(num(r[c.units])), cents(r[c.sales]), c.ppc >= 0 ? -cents(r[c.ppc]) : -cents(r[c.ads]), -cents(r[c.ads]), cents(r[c.net]), c.bsr >= 0 ? Math.round(num(r[c.bsr])) : 0, -cents(r[c.fees]), -cents(r[c.cogs]), c.refunds >= 0 ? -cents(r[c.refunds]) : 0]);
+    if (recs.length < 200) throw new Error(`Only ${recs.length} ASIN rows — a normal day has 400+. This looks like a broken or filtered export; not loaded.`);
+    const bad = recs.filter(r => Math.abs((r[3] - r[5] - r[8] - r[9] - r[10]) - r[6]) > 1).length;
+    if (bad > recs.length * 0.05) throw new Error(`${bad} rows fail sales − ads − fees − COGS − refunds = net. Wrong column layout; not loaded.`);
+    const newA = mergeSbDay(day, recs);
+    await put('sb:' + day, { kind: 'sellerboard', date: day, file: file.name, at: new Date().toISOString(), recs });
+    return { day, rows: recs.length, newAsins: newA, mismatches: bad, units: recs.reduce((a, r) => a + r[2], 0), sales: recs.reduce((a, r) => a + r[3], 0) / 100 };
+  };
+  H.ingestPlanner = async (file, dealId) => {
+    const text = await file.text(); if (!/SKU DETAIL/.test(text)) throw new Error('Not a planner export — expected a "SKU DETAIL" section (deal-allocation-<TAG>-<date>.csv).');
+    const t = parseCsv(text.split('SKU DETAIL')[1].trim()); const h = t.hdr; const g = (r, ...n) => { const i = findCol(h, ...n); return i >= 0 ? r[i] : ''; }; const nv = (v) => v === '' || v == null || v === '-' ? null : num(v);
+    const tag = (file.name.match(/deal-allocation-([A-Z0-9]+)-/) || [])[1]; const pulled = (file.name.match(/(\d{4}-\d\d-\d\d)/) || [])[1] || new Date().toISOString().slice(0, 10);
+    let deal = dealId; if (!deal) { const cands = D.deals.rows.filter(d => d.tag === tag && d.end >= pulled).sort((a, b) => a.start.localeCompare(b.start)); if (!cands.length) throw new Error(`No upcoming or live ${tag || '?'} deal in the calendar to attach this pull to — pick the deal.`); deal = cands[0].id; }
+    const rows = t.rows.filter(r => r[0]).map(r => ({ sku: g(r, 'SKU'), product: g(r, 'Product'), mkt: g(r, 'Marketplace') || 'US', fba_now: nv(g(r, 'FBA Now')), vel: nv(g(r, 'Velocity/day')), min_doh: nv(g(r, 'Min DOH')), hard_floor: nv(g(r, 'Hard Floor')), soft_target: nv(g(r, 'Soft Target')), service: g(r, 'Service Level') || 'p80', baseline_demand: nv(g(r, 'Expected Units (deal window)')), pipeline: nv(g(r, 'Pipeline In')), safe_alloc: nv(g(r, 'Safe Allocation')), upside: nv(g(r, 'Upside')), rec_date: g(r, 'Recovery Date') || null, rec_po: g(r, 'Recovery PO') || null, rec_doh: nv(g(r, 'Recovered DOH')), post_doh_max: nv(g(r, 'Post-Deal DOH (max safe)')), post_doh_bal: nv(g(r, 'Post-Deal DOH (balanced)')), status: g(r, 'Status') || 'SAFE', deal, asof: pulled }));
+    mergePlanner(deal, rows); await put('planner:' + deal, { kind: 'planner', deal, file: file.name, at: new Date().toISOString(), rows });
+    return { deal, rows: rows.length, safe: rows.reduce((a, r) => a + (r.safe_alloc || 0), 0) };
+  };
+  H.ingestAlloc = async (file, dealId) => {
+    const t = parseCsv(await file.text()); const h = t.hdr; const ci = findCol(h, 'Deal ID', 'Deal'), cs = findCol(h, 'SKU'), ca = findCol(h, 'Safe Allocation', 'Allocation', 'Safe');
+    if (cs < 0 || ca < 0) throw new Error('Need columns SKU and Safe Allocation (and Deal ID unless you pick the deal).');
+    const byDeal = {}; t.rows.forEach(r => { const deal = ci >= 0 && r[ci] ? r[ci].trim() : dealId; if (!deal || !r[cs]) return; (byDeal[deal] = byDeal[deal] || []).push({ deal, sku: r[cs].trim(), alloc: num(r[ca]), notes: null }); });
+    const deals = Object.keys(byDeal); if (!deals.length) throw new Error('No rows with a deal id — pick the deal or add a Deal ID column.');
+    for (const deal of deals) { mergeAlloc(deal, byDeal[deal]); await put('alloc:' + deal, { kind: 'alloc', deal, file: file.name, at: new Date().toISOString(), rows: byDeal[deal] }); }
+    return { deals, rows: t.rows.length };
+  };
+  H.addSc = async (deal, rec) => { mergeSc(deal, rec); await put(`sc:${deal}:${rec.date}`, { kind: 'sc', deal, at: new Date().toISOString(), rec }); return rec; };
+
+  // ---------- load persisted uploads on start ----------
+  H.items = [];
+  H.init = async () => {
+    try { const items = await all(); H.items = items.map(i => ({ key: i.key, ...i.val })).sort((a, b) => (a.kind + (a.date || a.deal || '')).localeCompare(b.kind + (b.date || b.deal || '')));
+      for (const it of H.items) { if (it.kind === 'sellerboard') mergeSbDay(it.date, it.recs); else if (it.kind === 'planner') mergePlanner(it.deal, it.rows); else if (it.kind === 'alloc') mergeAlloc(it.deal, it.rows); else if (it.kind === 'sc') mergeSc(it.deal, it.rec); }
+    } catch (e) { H.error = e.message; H.items = []; }
+    return H.items;
+  };
+  H.refresh = async () => { const items = await all(); H.items = items.map(i => ({ key: i.key, ...i.val })); return H.items; };
+  H.remove = async (key) => { await del(key); };
+  H.reset = async () => { await clear(); };
+  H.supported = () => typeof indexedDB !== 'undefined' && typeof DecompressionStream !== 'undefined';
+  window.Hub = H;
+})();
+
+</script>
+<script>
 /* Deal MIS — shell, router and pages. Same engine and data as the tracker sheets; laid out like the Command Center. */
 (function () {
   const D = window.DCC, E = window.Engine, C = window.Charts, F = C.fmt, S = D.settings;
@@ -1053,7 +1180,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
   const dshort = C.dshort;
   const dmid = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const window_ = (d) => d.days === 1 ? dlong(d.start) : `${dmid(d.start)} – ${dmid(d.end)}, ${d.end.slice(0, 4)}`;
-  const today = S.today;
+  const today = [S.today, new Date().toISOString().slice(0, 10)].sort().pop();
   const TAGCOL = ['#2563EB', '#F59E0B', '#16A34A', '#7C3AED', '#DB2777', '#0891B2', '#DC2626', '#65A30D'];
   const mainTags = ['B4', 'B6', 'S4', 'S6', 'SS4', 'SSB6', 'C4', 'BT'];
   const tagColor = (t) => { const i = mainTags.indexOf(t); return i >= 0 ? TAGCOL[i] : '#98A2B3'; };
@@ -1083,7 +1210,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></svg>',
   };
 
-  const state = { asOf: E.lastDate, basis: 'elapsed', months: 12, chart: 'sales', cum: true, covFrom: null, covTo: null, covType: 'all', range: '2m', regF: 'all', regQ: '', planDisc: null, planUp: null, preset: 'measured', plannerDeal: null, plannerType: null, skuF: 'all', stopF: 'all', histF: 'all', guide: false };
+  const state = { get asOf() { return this._asOf || E.lastDate; }, set asOf(v) { this._asOf = v; }, _asOf: null, basis: 'elapsed', months: 12, chart: 'sales', cum: true, covFrom: null, covTo: null, covType: 'all', range: '2m', regF: 'all', regQ: '', planDisc: null, planUp: null, preset: 'measured', plannerDeal: null, plannerType: null, skuF: 'all', stopF: 'all', histF: 'all', guide: false };
   try { const s = JSON.parse(localStorage.getItem('deal-mis') || '{}'); if (s.basis) state.basis = s.basis; if (s.guide) state.guide = true; } catch (e) { }
   const persist = () => { try { localStorage.setItem('deal-mis', JSON.stringify({ basis: state.basis, guide: state.guide })); } catch (e) { } };
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
@@ -1163,6 +1290,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     { path: 'ppc', label: 'PPC & TACOS' },
     { path: 'storage', label: 'Storage & LTSF' },
     { path: 'process', label: 'Process & Automation' },
+    { path: 'data', label: 'Data Hub', cnt: () => { const n = (window.Hub && window.Hub.items || []).length; return n ? { n, cls: 'live' } : null; } },
   ];
   function renderShell(route) {
     $('#hdr').innerHTML = `<div class="hdr"><div class="ttl"><div class="logo">MIS</div><div><h1>Deal MIS</h1><div class="sub">Deal Management Information System · the deal tracker, analysis files and scorecards as one app · Amazon US</div></div></div>
@@ -1175,7 +1303,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     $('#channels').innerHTML = `<div class="channels"><div class="chan on"><div class="ic">${I.cart}</div><div><b>Amazon</b><span>Amazon deals &amp; coupons · US</span></div><div class="chk">${I.check}</div></div><div class="chan off"><div class="ic">${I.tiktok}</div><div><b>TikTok</b><span>0 campaigns · not tracked here yet</span></div></div><div class="chan off"><div class="ic">${I.store}</div><div><b>DTC</b><span>Coming soon</span></div></div></div>`;
     $('#tabs').innerHTML = `<div class="tabs" role="tablist">${TABS.map(t => { const c = t.cnt ? t.cnt() : null; return `<button role="tab" aria-selected="${route === t.path}" data-p="${t.path}">${t.label}${c ? `<span class="cnt ${c.cls}">${c.n}</span>` : ''}</button>`; }).join('')}</div>`;
     $$('#tabs button').forEach(b => b.addEventListener('click', () => { location.hash = '#/' + b.dataset.p; }));
-    $('#foot').innerHTML = `<span>Data snapshot ${dlong(S.built)} · Sellerboard feed ${dshort(E.firstDate)} – ${dshort(E.lastDate)} · ${D.sellerboard.asins.length} ASINs · ${D.deals.rows.length} deals (D001–D137) reconciled with Seller Central 21 Aug.</span><span>Rules: ${S.baseline_days} clean baseline days · fee $${S.fee_day}/day + ${pct(S.fee_pct, 0)}, cap $${int(S.fee_cap)} · net = Sellerboard net − fee · STOP at ${pct(S.stop_line, 0)} of safe allocation.</span>`;
+    const up = (window.Hub && window.Hub.items || []).filter(i => i.kind === 'sellerboard').length; $('#foot').innerHTML = `<span>Data snapshot ${dlong(S.built)}${up ? ` + ${up} day${up > 1 ? 's' : ''} uploaded in this browser` : ''} · Sellerboard feed ${dshort(E.firstDate)} – ${dshort(E.lastDate)} · ${D.sellerboard.asins.length} ASINs · ${D.deals.rows.length} deals (D001–D137) reconciled with Seller Central 21 Aug.</span><span>Rules: ${S.baseline_days} clean baseline days · fee $${S.fee_day}/day + ${pct(S.fee_pct, 0)}, cap $${int(S.fee_cap)} · net = Sellerboard net − fee · STOP at ${pct(S.stop_line, 0)} of safe allocation.</span>`;
   }
 
   // ---------- alerts (shared) ----------
@@ -1678,6 +1806,43 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     detail(5);
   };
 
+
+  // ---------- data hub ----------
+  pages.data = function (page) {
+    const Hb = window.Hub; const items = (Hb && Hb.items) || [];
+    const sbDays = items.filter(i => i.kind === 'sellerboard').sort((a, b) => b.date.localeCompare(a.date));
+    const liveDeals = D.deals.rows.filter(d => E.status(d, today) === 'live');
+    const yday = E.addDays(today, -1);
+    page.innerHTML = `<div class="view">
+      <div class="page-head"><div><h2 style="font-size:16px">Data Hub</h2><p>Drop the day's exports here and every page recalculates. Files are checked before they are accepted (one day per file, 400+ ASIN rows, sales − ads − fees − COGS − refunds = net) and remembered in this browser, so they are still here tomorrow. To make an upload permanent for everyone, run <b>/deal-update</b> with the same file in Downloads.</p></div><div class="toolbar">${items.length ? `<button class="btn danger" id="reset">Remove all uploads</button>` : ''}</div></div>
+      ${!Hb || !Hb.supported() ? `<div class="banner bad">${I.warn}<div><b>This browser cannot parse uploads here</b> (needs IndexedDB and DecompressionStream — Chrome, Edge or Safari 16.4+).</div></div>` : Hb.error ? `<div class="banner warn">${I.warn}<div>Stored uploads could not be read: ${esc(Hb.error)}</div></div>` : ''}
+      <div class="kpis stagger">${kpi('Feed ends', dlong(E.lastDate), `${E.dates.length} days · ${D.sellerboard.asins.length} ASINs`)}${kpi('Days uploaded here', sbDays.length, sbDays.length ? sbDays.slice(0, 3).map(i => dshort(i.date)).join(', ') + (sbDays.length > 3 ? '…' : '') : 'none yet', sbDays.length ? 'good' : '')}${kpi('Feed lag', E.diffDays(E.lastDate, today) + 'd', E.diffDays(E.lastDate, today) > 1 ? 'upload yesterday\'s Sellerboard export' : 'up to date', E.diffDays(E.lastDate, today) > 1 ? 'warn' : 'good')}${kpi('Planner / allocation uploads', items.filter(i => i.kind === 'planner').length + ' / ' + items.filter(i => i.kind === 'alloc').length)}${kpi('Seller Central readings', items.filter(i => i.kind === 'sc').length, 'typed in from Manage Promotions')}</div>
+      <div class="grid g3" style="margin-top:12px">
+        <div class="card"><div class="card-head"><div><h2>1 · Sellerboard day</h2><span class="sub">Dashboard → Products → group by ASIN → custom range = one day → export (xlsx or csv). The date is read from the filename.</span></div></div><div class="drop" data-kind="sellerboard"><span class="lbl">Drop the export here, or click to choose</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Day (only if the filename has no date)</label><input type="date" id="sbdate" value="${yday}"></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>2 · Planner pull</h2><span class="sub">deal-allocation-&lt;TAG&gt;-&lt;date&gt;.csv from the allocation planner. Attached to the next deal of that parent unless you pick one.</span></div></div><div class="drop" data-kind="planner"><span class="lbl">Drop the planner CSV here</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Attach to deal</label><select id="pldeal"><option value="">auto (next deal of that parent)</option>${D.deals.rows.filter(d => d.end >= today).sort((a, b) => a.start.localeCompare(b.start)).map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))} · ${dshort(d.start)}</option>`).join('')}</select></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>3 · Safe allocation</h2><span class="sub">CSV with Deal ID, SKU, Safe Allocation (the Deal Allocation tab). Switches on the STOP line for that deal.</span></div></div><div class="drop" data-kind="alloc"><span class="lbl">Drop the allocation CSV here</span></div><div class="controls" style="margin-top:8px"><div class="ctl"><label>Deal (if the file has no Deal ID column)</label><select id="aldeal"><option value="">from the file</option>${D.deals.rows.filter(d => d.end >= today).sort((a, b) => a.start.localeCompare(b.start)).map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))}</option>`).join('')}</select></div></div></div>
+      </div>
+      <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>4 · Seller Central reading</h2><span class="sub">From Manage Promotions (no API): sales, units, glance views, conversion for a live deal. One reading per day; the deal page shows the day-over-day log.</span></div></div>
+        <div class="controls"><div class="ctl"><label>Deal</label><select id="scdeal">${liveDeals.map(d => `<option value="${d.id}">${d.id} · ${esc(tagName(d.tag))}</option>`).join('') || '<option value="">no live deals</option>'}</select></div><div class="ctl"><label>Read on</label><input type="date" id="scdate" value="${today}" style="min-width:140px"></div><div class="ctl"><label>Sales $</label><input type="number" id="scsales" step="0.01" placeholder="40410.22" style="min-width:120px"></div><div class="ctl"><label>Units sold</label><input type="number" id="scunits" placeholder="540" style="min-width:100px"></div><div class="ctl"><label>Glance views</label><input type="number" id="scglance" placeholder="10021" style="min-width:100px"></div><div class="ctl"><label>Conversion %</label><input type="number" id="scconv" step="0.1" placeholder="5.4" style="min-width:100px"></div><button class="btn primary" id="scsave">Save reading</button></div></div>
+      <div id="dlog" class="stack" style="margin-top:12px"></div>
+      <div class="section"><h2>Uploads stored in this browser</h2><span class="sub">${items.length} item${items.length === 1 ? '' : 's'} · remove one to fall back to the published data for that day/deal</span></div>
+      <div id="upt"></div></div>`;
+    state.hubLog = state.hubLog || []; const paint = () => { $('#dlog').innerHTML = state.hubLog.slice(0, 8).map(l => `<div class="alert ${l.cls}"><div class="ic">${l.cls === 'good' ? '✓' : '!'}</div><div><b>${esc(l.title)}</b><div class="meta">${esc(l.meta)}</div></div></div>`).join(''); }; paint();
+    const log = (cls, title, meta) => { state.hubLog.unshift({ cls, title, meta }); paint(); };
+    const after = async () => { E.reindex(); await Hb.refresh(); render(); };
+    $$('.drop').forEach(z => {
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = z.dataset.kind === 'sellerboard' ? '.xlsx,.csv' : '.csv'; inp.style.display = 'none'; z.appendChild(inp);
+      z.addEventListener('click', () => inp.click()); z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over'));
+      const lbl = z.querySelector('.lbl'); const idle = lbl.textContent; const handle = async (file) => { if (!file) return; lbl.textContent = 'Reading ' + file.name + '…'; try { let r; if (z.dataset.kind === 'sellerboard') { r = await Hb.ingestSellerboard(file, $('#sbdate').value); toast(`Loaded ${dshort(r.day)}`); log('good', `${file.name} → ${dlong(r.day)}`, `${r.rows} ASIN rows · ${int(r.units)} units · ${money(r.sales)} sales · ${r.newAsins} new ASINs · ${r.mismatches} identity mismatches. Every page now reads through ${dshort(r.day)}.`); } else if (z.dataset.kind === 'planner') { r = await Hb.ingestPlanner(file, $('#pldeal').value || null); toast('Planner rows loaded'); log('good', `${file.name} → ${r.deal}`, `${r.rows} SKUs · safe allocation total ${int(r.safe)}. Planner and stop lines for ${r.deal} now use this pull.`); } else { r = await Hb.ingestAlloc(file, $('#aldeal').value || null); toast('Allocations loaded'); log('good', `${file.name} → ${r.deals.join(', ')}`, `${r.rows} rows. STOP lines switched on.`); } await after(); } catch (err) { lbl.textContent = idle; inp.value = ''; log('bad', `${file.name} rejected`, err.message); } };
+      z.addEventListener('drop', e => { e.preventDefault(); z.classList.remove('over'); handle(e.dataTransfer.files[0]); });
+      inp.addEventListener('change', () => handle(inp.files[0]));
+    });
+    $('#scsave').addEventListener('click', async () => { const deal = $('#scdeal').value; if (!deal) return; const rec = { date: $('#scdate').value, sales: $('#scsales').value === '' ? null : +$('#scsales').value, units: $('#scunits').value === '' ? null : +$('#scunits').value, glance: $('#scglance').value === '' ? null : +$('#scglance').value, conv: $('#scconv').value === '' ? null : +$('#scconv').value / 100 }; if (rec.sales == null && rec.units == null) { toast('Enter at least sales or units'); return; } await Hb.addSc(deal, rec); toast(`Saved ${deal} reading for ${dshort(rec.date)}`); await after(); });
+    if ($('#reset')) $('#reset').addEventListener('click', async () => { if (!confirm('Remove every upload stored in this browser and go back to the published data?')) return; await Hb.reset(); location.reload(); });
+    $('#upt').appendChild(table([{ key: 'kind', label: 'Type', fmt: v => `<span class="pill ${v === 'sellerboard' ? 'info' : v === 'sc' ? 'purple' : 'outline'}">${v}</span>` }, { key: 'what', label: 'Covers', val: r => r.kind === 'sellerboard' ? r.date : r.kind === 'sc' ? `${r.deal} · ${r.rec.date}` : r.deal, fmt: (v, r) => r.kind === 'sellerboard' ? dlong(v) : esc(v) }, { key: 'file', label: 'File', fmt: (v, r) => v ? `<span class="mono xs">${esc(v)}</span>` : r.kind === 'sc' ? `sales ${money(r.rec.sales)} · units ${int(r.rec.units)}` : '' }, { key: 'size', label: 'Rows', num: true, val: r => r.recs ? r.recs.length : r.rows ? r.rows.length : 1 }, { key: 'at', label: 'Uploaded', fmt: v => v ? new Date(v).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '' }, { key: 'key', label: '', fmt: v => `<button class="btn sm danger" data-rm="${esc(v)}">Remove</button>` }], items, { sort: 'at', empty: 'Nothing uploaded in this browser yet.' }));
+    $$('#upt [data-rm]').forEach(b => b.addEventListener('click', async () => { await Hb.remove(b.dataset.rm); toast('Removed — reloading the published data'); location.reload(); }));
+  };
+
   // ---------- CSV download ----------
   function downloadCsv(name, cols, rows) {
     const q = (v) => { if (v == null) return ''; const s = typeof v === 'number' ? (Math.round(v * 10000) / 10000).toString() : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -1700,7 +1865,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     if (route !== lastRoute) window.scrollTo({ top: 0 }); lastRoute = route;
   }
   window.addEventListener('hashchange', render);
-  render();
+  (async () => { if (window.Hub) { try { await window.Hub.init(); if (window.Hub.items.length) E.reindex(); } catch (e) { console.error(e); } } render(); })();
 })();
 
 </script>
