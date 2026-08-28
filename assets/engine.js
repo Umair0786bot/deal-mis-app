@@ -354,7 +354,7 @@
     const src = Object.values(out)[0]; return { rows: out, date: src ? src.date : null, deal: src ? src.deal : null, own: !!rows.find(r => r.deal === deal.id) };
   };
   E.analysis = (deal, p) => {
-    p = Object.assign({ referral: D.settings.referral, fee_day: D.settings.fee_day, fee_pct: D.settings.fee_pct, fee_cap: D.settings.fee_cap, priceMode: 'dashboard', ppcPct: 0, uplift: null, demand: 'app' }, p || {});
+    p = Object.assign({ referral: D.settings.referral, fee_day: D.settings.fee_day, fee_pct: D.settings.fee_pct, fee_cap: D.settings.fee_cap, priceMode: 'dashboard', ppcPct: 0, uplift: null, demand: 'app', discount: 0.15 }, p || {});
     const mult = E.multiplier(deal, E.lastDate); const up = p.uplift || 1;
     const pl = E.plannerFor(deal); const al = allocByDeal[deal.id] || {}; const own = plannerByDeal[deal.id] && Object.keys(plannerByDeal[deal.id]).length;
     const dash = E.dashboardFor(deal); const phist = {}; (D.price_history || []).forEach(x => { if (x.sku && x.deal_price != null) phist[x.sku] = x.deal_price; });
@@ -373,8 +373,8 @@
       const maxSales = alloc == null ? expected : Math.min(expected, alloc);
       const newSafe = (alloc || 0) + ltsfUnits; const maxSalesLtsf = alloc == null ? expected : Math.min(expected, newSafe);
       const refPrice = dr ? dr.ref : null; const dashPrice = dr ? (dr.manual || dr.final || dr.max_deal || null) : null; const histPrice = phist[sku] || null;
-      const selPrice = p.priceMode === 'historical' ? (histPrice || dashPrice) : p.priceMode === 'reference' ? (refPrice || dashPrice) : (dashPrice || histPrice || (price ? Math.round(price * 0.85 * 100) / 100 : null));
-      const priceSrc = p.priceMode === 'historical' && histPrice ? 'Historical' : p.priceMode === 'reference' && refPrice ? 'Reference' : dashPrice ? 'Dashboard' : histPrice ? 'Historical' : price ? 'Base −15%' : 'MISSING';
+      const selPrice = p.priceMode === 'historical' ? (histPrice || dashPrice) : p.priceMode === 'reference' ? (refPrice || dashPrice) : (dashPrice || histPrice || (price ? Math.round(price * (1 - p.discount) * 100) / 100 : null));
+      const priceSrc = p.priceMode === 'historical' && histPrice ? 'Historical' : p.priceMode === 'reference' && refPrice ? 'Reference' : dashPrice ? 'Dashboard' : histPrice ? 'Historical' : price ? `Base −${Math.round(p.discount * 100)}%` : 'MISSING';
       const str = refPrice != null && price != null && refPrice > price; const strPct = str ? (refPrice - price) / price : 0;
       const match = dashPrice == null || histPrice == null ? '' : dashPrice === histPrice ? 'Yes' : dashPrice < histPrice ? 'Current deal price low' : 'Favorable deal price';
       const unitMargin = selPrice != null ? selPrice - cogs - fba - selPrice * p.referral : null;
