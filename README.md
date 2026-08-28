@@ -13,6 +13,8 @@ one file.
 - Shareable artifact (same app, single file): https://claude.ai/code/artifact/3f5dc1d2-3126-4395-b218-e1514c9529c6
 
 ## Daily routine (replaces the Google-Sheet pastes)
+**Fastest:** open the app → **Data Hub** tab → drop the day's Sellerboard export (xlsx or csv). It is parsed in the browser, validated, merged, and remembered in that browser (IndexedDB). Planner CSVs, allocation CSVs and the Seller Central reading (sales / units / glance / conversion) go in the same tab. Uploads are per-browser; to make them permanent for everyone run `/deal-update` with the same file in Downloads.
+
 Drop the day's Sellerboard per-ASIN export (and any new planner / tracker files) in `~/Downloads`, then in Claude Code:
 `/deal-update` (ingest + rebuild + morning update + verify) → `/deal-publish` (push + republish). `/deal-status` prints the update without changing anything; `/deal-edit` adds, closes or cancels deals and records Seller Central facts (`scripts/deal.py`).
 Scripts: `scripts/update_data.py`, `scripts/deal.py`, `scripts/status.cjs`, `scripts/bundle.py`, `scripts/verify.cjs` (`npm install` once for the headless check).
@@ -38,7 +40,8 @@ Settings → Pages → Deploy from a branch → `main` / root. `.nojekyll` is in
 | Historical Performance | Every measured deal: lift and economics by type and parent, benchmark day-curves, LD uplift | Historical DEAL Performance, All Deals, LD Uplift |
 | PPC & TACOS | TACOS by day, by deal day, by parent, top SKUs with Sellerboard net | Ad Spend, ProductStats |
 | Storage & LTSF | Aged units, monthly charge, 30/60/90 inflow, Gate 5 candidates | LTSF, Summary USA, AIS Inflow |
-| Process & Automation | 7 stages, 8 gates, cadence, owners, sheet → feed map | TRACKER-HANDBOOK |
+| Process & Automation | 7 stages, 8 gates, cadence, sheet → feed map | TRACKER-HANDBOOK |
+| Data Hub | Drop Sellerboard / planner / allocation files, type Seller Central readings; kept in the browser | the daily paste routine |
 
 ## Rules the engine applies
 - Baseline = 14 clean days before the deal, skipping other deals for the same parent and days without an export.

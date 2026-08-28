@@ -8,6 +8,9 @@ Static app (no build, no backend): `index.html` + `assets/{mis.css, mis.js, char
 - `/deal-edit` — add / close / cancel deals, Seller Central facts, enrolled ASIN list, objectives (`scripts/deal.py`).
 - `/deal-publish` — bundle, verify, commit, push (GitHub Pages at https://umair0786bot.github.io/deal-mis-app/), republish the artifact at the same URL.
 
+## Data Hub (in-app uploads)
+`assets/hub.js`: parses Sellerboard xlsx (zip + DecompressionStream, no library) or csv, planner CSVs and allocation CSVs in the browser, validates (one day per file, ≥200 rows, identity check), merges into `window.DCC`, persists in IndexedDB (`deal-mis` / `uploads`), and re-merges on load before the first render. Per-browser only — `/deal-update` is the shared path. Test: scratchpad `test_hub.cjs` pattern (setInputFiles on `.drop input[type=file]`).
+
 ## Rules the numbers rest on — never change silently
 - Fee = min($70 × days billed + 1% × deal revenue, $2,000). Days billed = elapsed (default) or planned.
 - Net after fee = Sellerboard net (ads already inside it) − fee. Never subtract PPC again.
