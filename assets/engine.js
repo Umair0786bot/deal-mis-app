@@ -279,5 +279,63 @@
     return out;
   };
 
+
+  /** Expected vs actual per SKU with a stock-sufficiency read. Stock now = latest snapshot (planner pull or cost master)
+      minus units sold since that snapshot; cover after the deal = (stock now - projected remaining deal units) / pre-deal velocity. */
+  E.stockRisk = (m, mult) => {
+    const s = D.settings; const deal = m.deal; const remaining = Math.max(0, deal.days - m.elapsed);
+    const pl = plannerByDeal[deal.id] || {};
+    return m.perSku.map(p => {
+      const meta = skuMeta.get(p.sku) || {}; const row = pl[p.sku];
+      let stock0 = null, asof = null, src = null;
+      if (row && row.fba_now != null) { stock0 = row.fba_now; asof = row.asof || deal.start; src = 'planner ' + (row.asof || ''); }
+      else if (meta.fba_on_hand != null) { stock0 = meta.fba_on_hand; asof = meta.stock_asof || null; src = 'cost master ' + (meta.stock_asof || ''); }
+      let soldSince = 0;
+      if (stock0 != null && asof) { const one = new Set([p.i]); SB.dates.filter(d => d > asof && d <= m.asOf).forEach(d => { soldSince += sumDay(dateIdx.get(d), one).units; }); }
+      const stockNow = stock0 == null ? null : Math.max(0, stock0 - soldSince);
+      const perDay = m.nData ? p.units / m.nData : 0;
+      const expected = p.base * mult.value * m.nData;
+      const pace = expected > 0 ? p.units / expected : null;
+      const projRemaining = perDay * remaining;
+      const stockAfter = stockNow == null ? null : stockNow - projRemaining;
+      const vel = Math.max(p.base || 0, meta.p30 || 0, 0.05);
+      const coverAfter = stockAfter == null ? null : stockAfter / vel;
+      const rank = (p.rankVar || 0) >= 0.1;
+      let flag = 'OK', cls = 'good', why = '';
+      if (p.alloc === 0) { flag = 'NOT IN DEAL'; cls = 'dim'; why = 'safe allocation 0'; }
+      else if (stockNow != null && projRemaining > stockNow) { flag = 'WILL RUN OUT'; cls = 'bad'; why = `${Math.round(projRemaining)} more units expected before ${deal.end}, ${Math.round(stockNow)} in stock`; }
+      else if (p.pctStop != null && p.pctStop >= s.stop_line) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `sold ${Math.round(p.pctStop * 100)}% of the stop line`; }
+      else if (coverAfter != null && coverAfter < s.min_cover_days) { flag = 'REMOVE FROM DEAL'; cls = 'bad'; why = `${Math.round(coverAfter)} days of cover left after the deal (floor ${s.min_cover_days})`; }
+      else if ((p.pctStop != null && p.pctStop >= s.stop_warn) || (coverAfter != null && coverAfter < s.min_cover_days * 1.6) || (pace != null && pace >= 1.5)) { flag = 'WATCH'; cls = 'warn'; why = pace >= 1.5 ? `selling ${Math.round(pace * 100)}% of plan` : coverAfter != null && coverAfter < s.min_cover_days * 1.6 ? `${Math.round(coverAfter)} days of cover after the deal` : `${Math.round(p.pctStop * 100)}% of the stop line`; }
+      if (rank && cls === 'warn') { flag = 'PROTECT RANK VARIATION'; cls = 'bad'; why = 'rank driver - ' + why; }
+      else if (rank && cls === 'bad') { why = 'rank driver - ' + why; }
+      const perf = pace == null ? 'no baseline' : pace >= 1.25 ? 'over' : pace <= 0.75 ? 'under' : 'on plan';
+      return { ...p, expected, pace, perf, stock0, stockNow, soldSince, asof, src, projRemaining, stockAfter, coverAfter, rank, flag, cls, why, remaining };
+    });
+  };
+
+  /** Lightning Deal allocation: the units to ENROL for a one-day deal, not the safe allocation.
+      expected day = velocity x LD multiplier; recommend expected x buffer (P80-ish), never above safe allocation or stock above the hard floor. */
+  E.ldAllocation = (deal, mult, buffer = 1.3) => {
+    const pl = plannerByDeal[deal.id] || {}; const al = allocByDeal[deal.id] || {};
+    const skus = new Set([...Object.keys(pl), ...Object.keys(al)]);
+    if (!skus.size) D.skus.filter(s => s.tag === deal.tag).forEach(s => skus.add(s.sku));
+    const rows = [...skus].map(sku => {
+      const meta = skuMeta.get(sku) || {}; const row = pl[sku]; const safe = al[sku] != null ? al[sku] : (row ? row.safe_alloc : null);
+      const vel = row && row.vel != null ? row.vel : (meta.p30 || meta.p7 || 0);
+      const stock = row && row.fba_now != null ? row.fba_now : meta.fba_on_hand;
+      const floor = row && row.hard_floor != null ? row.hard_floor : (vel * D.settings.min_cover_days);
+      const expected = vel * mult.value * deal.days;
+      let rec = Math.ceil(expected * buffer);
+      const capStock = stock != null ? Math.max(0, Math.floor(stock - floor)) : null;
+      const caps = [];
+      if (safe != null && rec > safe) { rec = safe; caps.push('safe allocation'); }
+      if (capStock != null && rec > capStock) { rec = capStock; caps.push('stock above floor'); }
+      if (expected < 1 && rec > 0) { rec = Math.min(rec, 1); }
+      return { sku, vel, expected, rec: Math.max(0, rec), safe, stock, floor, cap: caps.join(' + '), reason: safe === 0 ? 'safe allocation 0 - do not enrol' : rec === 0 ? 'no demand' : caps.length ? 'capped by ' + caps.join(' + ') : `expected ${expected.toFixed(1)} x ${buffer} buffer`, rank: (meta.rank_var || 0) >= 0.1 };
+    }).sort((a, b) => b.rec - a.rec);
+    return { rows, total: rows.reduce((a, r) => a + r.rec, 0), totalSafe: rows.reduce((a, r) => a + (r.safe || 0), 0), buffer, mult };
+  };
+
   window.Engine = E;
 })();
