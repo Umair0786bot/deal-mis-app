@@ -39,6 +39,9 @@
   E.reindex = index;
   E.dealById = (id) => dealById.get(id);
 
+  /** Planner rows for a deal; if none were pulled for it, the most recent pull for the same parent. */
+  E.plannerFor = (deal) => { if (plannerByDeal[deal.id] && Object.keys(plannerByDeal[deal.id]).length) return plannerByDeal[deal.id]; const same = deals.filter(x => x.tag === deal.tag && plannerByDeal[x.id] && Object.keys(plannerByDeal[x.id]).length); if (!same.length) return {}; const pick = same.sort((a, b) => ((plannerByDeal[b.id][Object.keys(plannerByDeal[b.id])[0]] || {}).asof || '').localeCompare((plannerByDeal[a.id][Object.keys(plannerByDeal[a.id])[0]] || {}).asof || ''))[0]; return plannerByDeal[pick.id]; };
+  E.allocFor = (deal) => { if (allocByDeal[deal.id]) return allocByDeal[deal.id]; const pl = plannerByDeal[deal.id]; if (!pl) return {}; const o = {}; Object.values(pl).forEach(r => { if (r.safe_alloc != null) o[r.sku] = r.safe_alloc; }); return o; };
   E.status = (d, today) => today < d.start ? 'upcoming' : today > d.end ? 'past' : 'live';
   E.dealsOn = (date, tag) => deals.filter(d => d.start <= date && d.end >= date && (!tag || d.tag === tag));
 
@@ -118,7 +121,7 @@
       }
     }
     // per SKU
-    const alloc = allocByDeal[deal.id] || {};
+    const alloc = E.allocFor(deal);
     const perSku = [...set].map(i => {
       const a = SB.asins[i]; const one = new Set([i]);
       const dd = dealDays.reduce((acc, d) => { const r = sumDay(dateIdx.get(d), one); acc.units += r.units; acc.sales += r.sales; acc.ads += r.ads; acc.net += r.net; return acc; }, { units: 0, sales: 0, ads: 0, net: 0 });
@@ -273,7 +276,7 @@
   /** Stop board across the live deals. */
   E.stopBoard = (asOf, basis) => {
     asOf = asOf || E.lastDate; const today = D.settings.today;
-    const live = deals.filter(d => E.status(d, today) === 'live' || (d.end >= asOf && d.start <= asOf));
+    const live = deals.filter(d => !d.cancelled && !d.planned_end && (E.status(d, today) === 'live' || (d.end >= asOf && d.start <= asOf)));
     const out = [];
     live.forEach(d => { const m = E.metrics(d, asOf, { basis }); m.perSku.forEach(p => { const st = p.alloc == null ? 'no allocation' : p.alloc === 0 ? 'not enrolled' : p.units >= p.stop ? 'STOP now' : p.units >= p.alloc * D.settings.stop_warn ? 'near limit' : p.proj >= p.stop ? 'will breach' : 'ok'; out.push({ deal: d.id, tag: d.tag, type: d.type, ...p, status: st }); }); });
     return out;
@@ -284,7 +287,7 @@
       minus units sold since that snapshot; cover after the deal = (stock now - projected remaining deal units) / pre-deal velocity. */
   E.stockRisk = (m, mult) => {
     const s = D.settings; const deal = m.deal; const remaining = Math.max(0, deal.days - m.elapsed);
-    const pl = plannerByDeal[deal.id] || {};
+    const pl = E.plannerFor(deal);
     return m.perSku.map(p => {
       const meta = skuMeta.get(p.sku) || {}; const row = pl[p.sku];
       let stock0 = null, asof = null, src = null;
@@ -317,11 +320,11 @@
   /** Lightning Deal allocation: the units to ENROL for a one-day deal, not the safe allocation.
       expected day = velocity x LD multiplier; recommend expected x buffer (P80-ish), never above safe allocation or stock above the hard floor. */
   E.ldAllocation = (deal, mult, buffer = 1.3) => {
-    const pl = plannerByDeal[deal.id] || {}; const al = allocByDeal[deal.id] || {};
+    const own = plannerByDeal[deal.id] && Object.keys(plannerByDeal[deal.id]).length; const pl = E.plannerFor(deal); const al = allocByDeal[deal.id] || {};
     const skus = new Set([...Object.keys(pl), ...Object.keys(al)]);
     if (!skus.size) D.skus.filter(s => s.tag === deal.tag).forEach(s => skus.add(s.sku));
     const rows = [...skus].map(sku => {
-      const meta = skuMeta.get(sku) || {}; const row = pl[sku]; const safe = al[sku] != null ? al[sku] : (row ? row.safe_alloc : null);
+      const meta = skuMeta.get(sku) || {}; const row = pl[sku]; const safe = al[sku] != null ? al[sku] : (row && own ? row.safe_alloc : null);
       const vel = row && row.vel != null ? row.vel : (meta.p30 || meta.p7 || 0);
       const stock = row && row.fba_now != null ? row.fba_now : meta.fba_on_hand;
       const floor = row && row.hard_floor != null ? row.hard_floor : (vel * D.settings.min_cover_days);
@@ -334,7 +337,7 @@
       if (expected < 1 && rec > 0) { rec = Math.min(rec, 1); }
       return { sku, vel, expected, rec: Math.max(0, rec), safe, stock, floor, cap: caps.join(' + '), reason: safe === 0 ? 'safe allocation 0 - do not enrol' : rec === 0 ? 'no demand' : caps.length ? 'capped by ' + caps.join(' + ') : `expected ${expected.toFixed(1)} x ${buffer} buffer`, rank: (meta.rank_var || 0) >= 0.1 };
     }).sort((a, b) => b.rec - a.rec);
-    return { rows, total: rows.reduce((a, r) => a + r.rec, 0), totalSafe: rows.reduce((a, r) => a + (r.safe || 0), 0), buffer, mult };
+    const first = pl[Object.keys(pl)[0]]; return { rows, total: rows.reduce((a, r) => a + r.rec, 0), totalSafe: rows.reduce((a, r) => a + (r.safe || 0), 0), buffer, mult, source: !Object.keys(pl).length ? 'cost master velocities (no planner pull)' : own ? 'planner pull ' + (first.asof || '') + ' for this deal' : 'planner pull ' + (first.asof || '') + ' for the same parent (' + deal.tag + '), safe allocation not applied' };
   };
 
   window.Engine = E;
