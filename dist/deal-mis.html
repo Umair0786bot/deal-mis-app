@@ -181,7 +181,7 @@ select:focus,input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,9
 
 /* ---------- explain mode ---------- */
 .guide{display:none;font-size:11.5px;color:var(--ink-2);background:var(--blue-bg);border-left:2px solid var(--blue-line);padding:5px 9px;border-radius:4px;margin:8px 0 10px;line-height:1.45}
-body.guide .guide{display:block}
+body.explain .guide{display:block}
 .kpi .guide{margin:6px 0 0}
 .plain{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--green);border-radius:var(--r);padding:12px 16px;font-size:13.5px;line-height:1.6;color:var(--ink);box-shadow:var(--shadow);margin-bottom:12px}
 .plain b{font-weight:600}
@@ -1105,7 +1105,7 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     $$('#hdr .seg button').forEach(b => b.addEventListener('click', () => { state.basis = b.dataset.b; persist(); render(); }));
     $('#asof').addEventListener('change', e => { state.asOf = e.target.value; render(); });
     $('#guide').addEventListener('click', () => { state.guide = !state.guide; persist(); render(); });
-    document.body.classList.toggle('guide', state.guide);
+    document.body.classList.toggle('explain', state.guide);
     $('#channels').innerHTML = `<div class="channels"><div class="chan on"><div class="ic">${I.cart}</div><div><b>Amazon</b><span>Amazon deals &amp; coupons · US</span></div><div class="chk">${I.check}</div></div><div class="chan off"><div class="ic">${I.tiktok}</div><div><b>TikTok</b><span>0 campaigns · not tracked here yet</span></div></div><div class="chan off"><div class="ic">${I.store}</div><div><b>DTC</b><span>Coming soon</span></div></div></div>`;
     $('#tabs').innerHTML = `<div class="tabs" role="tablist">${TABS.map(t => { const c = t.cnt ? t.cnt() : null; return `<button role="tab" aria-selected="${route === t.path}" data-p="${t.path}">${t.label}${c ? `<span class="cnt ${c.cls}">${c.n}</span>` : ''}</button>`; }).join('')}</div>`;
     $$('#tabs button').forEach(b => b.addEventListener('click', () => { location.hash = '#/' + b.dataset.p; }));

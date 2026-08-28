@@ -128,7 +128,7 @@
     $$('#hdr .seg button').forEach(b => b.addEventListener('click', () => { state.basis = b.dataset.b; persist(); render(); }));
     $('#asof').addEventListener('change', e => { state.asOf = e.target.value; render(); });
     $('#guide').addEventListener('click', () => { state.guide = !state.guide; persist(); render(); });
-    document.body.classList.toggle('guide', state.guide);
+    document.body.classList.toggle('explain', state.guide);
     $('#channels').innerHTML = `<div class="channels"><div class="chan on"><div class="ic">${I.cart}</div><div><b>Amazon</b><span>Amazon deals &amp; coupons · US</span></div><div class="chk">${I.check}</div></div><div class="chan off"><div class="ic">${I.tiktok}</div><div><b>TikTok</b><span>0 campaigns · not tracked here yet</span></div></div><div class="chan off"><div class="ic">${I.store}</div><div><b>DTC</b><span>Coming soon</span></div></div></div>`;
     $('#tabs').innerHTML = `<div class="tabs" role="tablist">${TABS.map(t => { const c = t.cnt ? t.cnt() : null; return `<button role="tab" aria-selected="${route === t.path}" data-p="${t.path}">${t.label}${c ? `<span class="cnt ${c.cls}">${c.n}</span>` : ''}</button>`; }).join('')}</div>`;
     $$('#tabs button').forEach(b => b.addEventListener('click', () => { location.hash = '#/' + b.dataset.p; }));
