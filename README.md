@@ -8,6 +8,15 @@ from the same feeds — nothing is pasted.
 from GitHub Pages, any static host, or `index.html` on disk. `dist/deal-mis.html` is the same app in
 one file.
 
+## Live
+- GitHub Pages: https://umair0786bot.github.io/deal-mis-app/  (redeploys on every push to `main`)
+- Shareable artifact (same app, single file): https://claude.ai/code/artifact/3f5dc1d2-3126-4395-b218-e1514c9529c6
+
+## Daily routine (replaces the Google-Sheet pastes)
+Drop the day's Sellerboard per-ASIN export (and any new planner / tracker files) in `~/Downloads`, then in Claude Code:
+`/deal-update` (ingest + rebuild + morning update + verify) → `/deal-publish` (push + republish). `/deal-status` prints the update without changing anything; `/deal-edit` adds, closes or cancels deals and records Seller Central facts (`scripts/deal.py`).
+Scripts: `scripts/update_data.py`, `scripts/deal.py`, `scripts/status.cjs`, `scripts/bundle.py`, `scripts/verify.cjs` (`npm install` once for the headless check).
+
 ## Run it
 - Double-click `index.html`, or `python -m http.server 8080` here and open http://localhost:8080
 - Single file: open `dist/deal-mis.html` (rebuild with `python scripts/bundle.py`)

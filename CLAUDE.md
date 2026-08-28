@@ -6,7 +6,7 @@ Static app (no build, no backend): `index.html` + `assets/{mis.css, mis.js, char
 - `/deal-update` — ingest new Sellerboard exports / tracker allocations / planner CSVs from `~/Downloads`, rebuild, print the morning update, verify.
 - `/deal-status` — print today's update without changing anything.
 - `/deal-edit` — add / close / cancel deals, Seller Central facts, enrolled ASIN list, objectives (`scripts/deal.py`).
-- `/deal-publish` — bundle, verify, commit, push (GitHub Pages), republish the artifact at the same URL.
+- `/deal-publish` — bundle, verify, commit, push (GitHub Pages at https://umair0786bot.github.io/deal-mis-app/), republish the artifact at the same URL.
 
 ## Rules the numbers rest on — never change silently
 - Fee = min($70 × days billed + 1% × deal revenue, $2,000). Days billed = elapsed (default) or planned.
