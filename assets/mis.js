@@ -224,9 +224,9 @@
 
   // ---------- performance (deal page) ----------
   pages.performance = function (page, id, tab) {
-    const order = D.deals.rows.slice().sort((a, b) => { const sa = E.status(a, today), sb = E.status(b, today); const rk = { live: 0, upcoming: 1, past: 2 }; return rk[sa] - rk[sb] || (sa === 'past' ? b.start.localeCompare(a.start) : a.start.localeCompare(b.start)); });
+    const order = D.deals.rows.slice().sort((a, b) => { const sa = E.status(a, today), sb = E.status(b, today); const rk = { live: 0, upcoming: 1, past: 2 }; const ka = (D.deals.known[a.id] || []).length ? 0 : 1, kb = (D.deals.known[b.id] || []).length ? 0 : 1; return rk[sa] - rk[sb] || (sa === 'live' ? ka - kb : 0) || (sa === 'past' ? b.start.localeCompare(a.start) : a.start.localeCompare(b.start)); });
     const measurable = (d) => d.start <= state.asOf && d.end >= E.firstDate;
-    id = id || (order.find(d => E.status(d, today) === 'live') || order[0]).id;
+    if (!id) { const live = order.filter(d => E.status(d, today) === 'live'); const pref = live.find(d => d.id === (S.default_deal || 'D105')); const known = live.filter(d => (D.deals.known[d.id] || []).length).sort((a, b) => metrics(b).tot.sales - metrics(a).tot.sales); id = (pref || known[0] || live[0] || order[0]).id; }
     const d = E.dealById(id); if (!d) { page.innerHTML = `<div class="card">Deal ${esc(id)} not found.</div>`; return; }
     const st = E.status(d, today); const m = metrics(d); const hasData = m.nData > 0; const mu = E.multiplier(d, state.asOf); const pace = E.pace(m, mu);
     tab = tab || (hasData ? 'overview' : 'plan');
