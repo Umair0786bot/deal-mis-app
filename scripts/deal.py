@@ -80,10 +80,13 @@ def main(argv):
         d.pop('cancelled', None); d.pop('closed_note', None); d['sc_status'] = 'Running' if d['start'] <= today <= d['end'] else 'Upcoming'
         save(); print('reopened', d['id'], d['start'], '->', d['end']); return
     if cmd == 'sc':
-        ap = argparse.ArgumentParser(prog='deal.py sc'); ap.add_argument('id'); ap.add_argument('--promo'); ap.add_argument('--status'); ap.add_argument('--asins', type=int); ap.add_argument('--issues', type=int); ap.add_argument('--sales', type=float); ap.add_argument('--units', type=int); ap.add_argument('--glance', type=int); ap.add_argument('--conv', type=float)
+        ap = argparse.ArgumentParser(prog='deal.py sc'); ap.add_argument('id'); ap.add_argument('--promo'); ap.add_argument('--status'); ap.add_argument('--asins', type=int); ap.add_argument('--issues', type=int); ap.add_argument('--sales', type=float); ap.add_argument('--units', type=int); ap.add_argument('--glance', type=int); ap.add_argument('--conv', type=float); ap.add_argument('--date', default=today, help='date the Seller Central page was read (default today)')
         a = ap.parse_args(rest)
         for k, v in dict(promo=a.promo, sc_status=a.status, asins=a.asins, issues=a.issues, sc_sales=a.sales, sc_units=a.units, sc_glance=a.glance, sc_conv=a.conv).items():
             if v is not None: d[k] = v
+        if a.sales is not None or a.units is not None:
+            hist = [h for h in d.get('sc_history', []) if h['date'] != iso(a.date)]
+            hist.append(dict(date=iso(a.date), sales=a.sales, units=a.units, glance=a.glance, conv=a.conv)); d['sc_history'] = sorted(hist, key=lambda h: h['date']); d['sc_asof'] = iso(a.date)
         save(); print('updated', d['id'], {k: d[k] for k in ('promo', 'sc_status', 'asins', 'issues', 'sc_sales', 'sc_units', 'sc_glance', 'sc_conv')}); return
     if cmd == 'enrol':
         p = pathlib.Path(rest[1]); text = p.read_text(encoding='utf-8-sig')
