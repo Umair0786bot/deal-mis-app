@@ -11,6 +11,20 @@ Static app (no build, no backend): `index.html` + `assets/{mis.css, mis.js, char
 ## Deal Analysis (Deals Financials) model
 `E.analysis(deal, {priceMode, ppcPct, uplift, demand})` reproduces the Deal Analysis file's per-SKU sheet: base price/COGS/FBA from `skus.js`, velocity + expected demand + safe allocation + FBA now from the planner pull (`E.plannerFor`), deal price from the Deal Dashboard pull (`data/dashboard.js`, latest for the deal else for the parent; manual > final > max deal), historical deal price from `price_history.js`, AIS units/charge from `sellerboard.age`. Referral = 15% of the deal price. Fee = $70 × days + 1% of max-sales revenue, capped $2,000. Three views: TRUE PICTURE (max sales, stock-limited), REFERENCE (all expected demand), OPPORTUNITY COST (lost units/revenue, blocked SKUs). `scripts/import_sources.py` loads these sources from the newest tracker + Deal Analysis workbooks in Downloads; the Data Hub can load the same workbooks in the browser.
 
+## Ranking variations (28 Aug)
+The measured rank share (Scale Insight / "essence" site) is STALE — subscription renewal pending. `E.analysis`
+therefore also derives rank drivers from base sales velocity: a SKU with >= 10% of the deal's total velocity
+is a rank driver (`isRank`, `rankSrc` = 'measured' | 'velocity', `velShare`). If a driver has allocation 0 /
+no usable price -> `rankIssue` = 'not included'; if stock caps its expected demand -> 'stock short'. Surfaced
+as a red banner + Read pill in the Deal Analysis section and as a red verdict reason in the Planner —
+"decide whether to run at all", because without the driver the other variations underperform.
+
+## Daily Monitoring tab
+`#/daily` — deal picker + inline Sellerboard drop (Hub.ingestSellerboard). Per deal: day x/y, SKUs enrolled,
+units sold vs base velocity, allocation total + burn, uplift vs no-deal days, revenue/TACOS/net after fee,
+latest SC conversion; day-by-day table (uplift per day, allocation-used meter); per-SKU table (base vel vs
+now vel, velocity-share rank tags); SC log. Adds a view only — no other tab was changed.
+
 ## Data Hub (in-app uploads)
 `assets/hub.js`: parses Sellerboard xlsx (zip + DecompressionStream, no library) or csv, planner CSVs and allocation CSVs in the browser, validates (one day per file, ≥200 rows, identity check), merges into `window.DCC`, persists in IndexedDB (`deal-mis` / `uploads`), and re-merges on load before the first render. Per-browser only — `/deal-update` is the shared path. Test: scratchpad `test_hub.cjs` pattern (setInputFiles on `.drop input[type=file]`).
 
