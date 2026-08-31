@@ -393,12 +393,20 @@
       if (dr && dr.min_commit && alloc != null && alloc > 0 && alloc < dr.min_commit) why.push(`allocation below Amazon minimum ${dr.min_commit}`);
       return { tag: deal.tag, sku, asin, rankVar: meta.rank_var || 0, size: meta.size || null, status: row ? row.status : null, price, cogs, fba, velApp, velL30, expApp, expVel, expected, ltsfUnits, alloc, maxSales, newSafe, maxSalesLtsf, revAllowed: selPrice != null ? newSafe * selPrice : 0, lostUnits, lostRev, refPrice, str, strPct, histPrice, dashPrice, dashStatus: dr ? dr.status : null, dashStock: dr ? dr.stock : null, minCommit: dr ? dr.min_commit : null, match, diff: dashPrice != null && histPrice != null ? dashPrice - histPrice : null, selPrice, priceSrc, unitMargin, expRev, gp, varFee, profitPre, aisUnits, aisCharge, revMS, gpMS, varFeeMS, profitMS, ppc, netPost, cash, fbaNow: row ? row.fba_now : meta.fba_on_hand, minDoh: row ? row.min_doh : null, postDoh: row ? row.post_doh_bal : null, read, why: why.join('; ') };
     }).sort((a, b) => b.profitMS - a.profitMS);
+    // Ranking variations: the measured rank share (Scale Insight) is stale, so ALSO derive them from base
+    // sales velocity - a SKU carrying >= 10% of this deal's total velocity is a rank driver for the family.
+    { const totVel = rows.reduce((a, r) => a + Math.max(r.velApp || 0, r.velL30 || 0), 0) || 1;
+      rows.forEach(r => { const v = Math.max(r.velApp || 0, r.velL30 || 0); r.velShare = v / totVel;
+        r.rankSrc = (r.rankVar || 0) >= 0.1 ? 'measured' : r.velShare >= 0.10 && v > 0 ? 'velocity' : null; r.isRank = !!r.rankSrc;
+        if (r.isRank) { if (r.alloc === 0 || r.selPrice == null || /No reference/.test(r.dashStatus || '')) { r.rankIssue = 'not included'; } else if (r.maxSalesLtsf + 0.5 < r.expected) { r.rankIssue = 'stock short'; } }
+      }); }
     const S = (k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
     const upfront = p.fee_day * deal.days, variable = S('revMS') * p.fee_pct, totalFee = Math.min(upfront + variable, p.fee_cap);
     const summary = { days: deal.days, upfront, variable, totalFee, cap: p.fee_cap, skus: rows.length, enrol: rows.filter(r => r.read === 'Run' || r.read === 'Check price').length, blocked: rows.filter(r => r.alloc === 0).length,
       truePic: { rev: S('revMS'), gp: S('gpMS'), net: S('gpMS') - totalFee, margin: S('revMS') ? (S('gpMS') - totalFee) / S('revMS') : null, ppc: S('ppc'), netPost: S('gpMS') - totalFee - S('ppc'), cash: S('cash') - totalFee, units: S('maxSalesLtsf') },
       reference: { rev: S('expRev'), gp: S('gp'), net: S('profitPre') - upfront, units: S('expected') },
       opportunity: { lostUnits: S('lostUnits'), lostRev: S('lostRev'), blocked: rows.filter(r => r.alloc === 0).length, aisUnits: S('aisUnits'), aisCharge: S('aisCharge') },
+      rank: { drivers: rows.filter(r => r.isRank), excluded: rows.filter(r => r.rankIssue === 'not included'), short: rows.filter(r => r.rankIssue === 'stock short') },
       mult, dash, priceMode: p.priceMode, ppcPct: p.ppcPct, uplift: up, demand: p.demand, params: p };
     summary.reference.upside = summary.reference.net - summary.truePic.net;
     return { rows, summary };
