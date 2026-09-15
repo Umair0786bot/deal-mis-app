@@ -82,6 +82,36 @@
   }
   function mergePlanner(deal, rows) { D.planner = D.planner.filter(p => p.deal !== deal).concat(rows); }
   function mergeAlloc(deal, rows) { D.allocations = D.allocations.filter(a => a.deal !== deal).concat(rows); }
+  const ndays = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 864e5) + 1;
+  function mergeDeal(spec) {
+    const rows = D.deals.rows; const i = rows.findIndex(d => d.id === spec.id);
+    const base = { src: 'added in the app', sc_status: spec.promo ? 'Upcoming' : null, promo: spec.promo || null, asins: null, issues: 0,
+                   sc_sales: null, sc_units: null, sc_glance: null, sc_conv: null, target: null, enrolled: null, objective: null };
+    const d = Object.assign(i >= 0 ? rows[i] : base, { id: spec.id, tag: spec.tag, type: spec.type, start: spec.start, end: spec.end, days: ndays(spec.start, spec.end) });
+    if (spec.promo) d.promo = spec.promo;
+    if (spec.cancelled != null) { d.cancelled = !!spec.cancelled; if (spec.cancelled) d.sc_status = 'Cancelled'; }
+    if (i < 0) rows.push(d);
+    rows.sort((a, b) => a.start.localeCompare(b.start) || a.id.localeCompare(b.id));
+    return { deal: d, added: i < 0 };
+  }
+  function mergePromo(deal, price, commit) {
+    D.deals.promo_price = D.deals.promo_price || {}; D.deals.promo_commit = D.deals.promo_commit || {};
+    D.deals.promo_price[deal] = price; D.deals.promo_commit[deal] = commit;
+    D.deals.known = D.deals.known || {}; D.deals.known[deal] = Object.keys(price).sort();
+    const d = D.deals.rows.find(x => x.id === deal); if (d) { d.enrolled = D.deals.known[deal].length; d.asins = d.enrolled; }
+  }
+  function mergeCalendar(cal) {
+    const rows = D.deals.rows; const byId = new Map(rows.map(d => [d.id, d]));
+    const byKey = new Map(); rows.forEach(d => { const k = d.tag + '|' + d.type + '|' + d.start; if (!byKey.has(k)) byKey.set(k, d); });
+    const added = [], moved = [], cancelled = [];
+    cal.forEach(c => {
+      const mine = byId.get(c.id) || byKey.get(c.tag + '|' + c.type + '|' + c.start);
+      if (!mine) { mergeDeal(c); added.push(c.id); return; }
+      if (mine.end !== c.end && !mine.planned_end) { mine.end = c.end; mine.days = ndays(mine.start, mine.end); moved.push(mine.id); }
+      if (c.cancelled && !mine.cancelled) { mine.cancelled = true; mine.sc_status = 'Cancelled'; cancelled.push(mine.id); }
+    });
+    return { added, moved, cancelled };
+  }
   function mergeSc(deal, rec) { const d = D.deals.rows.find(x => x.id === deal); if (!d) return; d.sc_history = (d.sc_history || []).filter(h => h.date !== rec.date).concat([rec]).sort((a, b) => a.date.localeCompare(b.date)); const last = d.sc_history[d.sc_history.length - 1]; d.sc_sales = last.sales; d.sc_units = last.units; d.sc_glance = last.glance; d.sc_conv = last.conv; d.sc_asof = last.date; }
 
   // ---------- ingest (validate -> merge -> persist) ----------
@@ -116,6 +146,34 @@
     for (const deal of deals) { mergeAlloc(deal, byDeal[deal]); await put('alloc:' + deal, { kind: 'alloc', deal, file: file.name, at: new Date().toISOString(), rows: byDeal[deal] }); }
     return { deals, rows: t.rows.length };
   };
+  H.addDeal = async (spec) => {
+    const id = String(spec.id || '').trim().toUpperCase();
+    if (!/^D\d{3}$/.test(id)) throw new Error('Deal id must look like D126 (a D and three digits) — use the id from the tracker.');
+    const tag = String(spec.tag || '').trim().toUpperCase(); if (!tag) throw new Error('Pick the parent tag.');
+    const type = spec.type === 'Lightning Deal' ? 'Lightning Deal' : 'Best Deal';
+    const start = spec.start; const end = type === 'Lightning Deal' ? start : (spec.end || start);
+    if (!start || !/^\d{4}-\d\d-\d\d$/.test(start)) throw new Error('Pick a start date.');
+    if (end < start) throw new Error('The end date is before the start date.');
+    const clash = D.deals.rows.find(d => d.id !== id && d.tag === tag && d.type === type && d.start === start);
+    if (clash) throw new Error(`${clash.id} is already the ${tag} ${type} starting ${start}. Edit that one instead of adding a second.`);
+    const r = mergeDeal({ id, tag, type, start, end, promo: (spec.promo || '').trim() || null });
+    await put('deal:' + id, { kind: 'deal', deal: id, at: new Date().toISOString(), spec: { id, tag, type, start, end, promo: r.deal.promo } });
+    return { deal: r.deal, added: r.added };
+  };
+  H.ingestPromo = async (file, dealId) => {
+    if (!dealId) throw new Error('Pick the deal this promotion file belongs to.');
+    if (!/\.xlsx$/i.test(file.name)) throw new Error('Expected the Seller Central promotion file (BestDeal-…-Products.xlsx or LightningDeal-…-Products.xlsx).');
+    const buf = await file.arrayBuffer(); const names = await H.sheetList(buf);
+    const t = await parseXlsx(buf, names.includes('Template') ? 'Template' : names[0]);
+    const price = {}, commit = {};
+    t.all.forEach(r => { const a = String(r[0] || '').trim(); if (!/^B0[A-Z0-9]{8}$/.test(a)) return; const p = num(r[1]); if (p > 0) price[a] = Math.round(p * 100) / 100; const c = Math.round(num(r[2])); if (c > 0) commit[a] = c; });
+    const n = Object.keys(price).length;
+    if (!n) throw new Error('No ASIN rows with a discounted price — is this the Products file downloaded from the promotion in Seller Central?');
+    mergePromo(dealId, price, commit);
+    await put('promo:' + dealId, { kind: 'promo', deal: dealId, file: file.name, at: new Date().toISOString(), price, commit });
+    const vals = Object.values(price);
+    return { deal: dealId, asins: n, min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / n, committed: Object.keys(commit).length };
+  };
   const dash = () => { D.dashboard = D.dashboard || { rows: [] }; return D.dashboard; };
   function mergeCosts(rows) { const bySku = new Map(D.skus.map(x => [x.sku, x])); let added = 0, upd = 0; rows.forEach(r => { let x = bySku.get(r.sku); if (!x) { x = { sku: r.sku, asin: r.asin, tag: r.tag, price: r.price, fba: r.fba, cogs: r.cogs, cogs_basis: 'upload' }; D.skus.push(x); bySku.set(r.sku, x); added++; } else { let ch = false; for (const k of ['price', 'fba', 'cogs']) { if (r[k] != null && !(r.fillOnly && x[k] != null) && x[k] !== r[k]) { x[k] = r[k]; ch = true; } } for (const k of ['l30', 'fba_on_hand', 'stock_asof', 'brand', 'product', 'size', 'color']) if (r[k] != null) x[k] = r[k]; if (!x.tag && r.tag) x.tag = r.tag; if (!x.asin && r.asin) x.asin = r.asin; if (ch) upd++; } }); SB.asins.forEach(a => { if (!a[2] || a[2] === '?') { const x = bySku.get(a[1]); if (x && x.tag) a[2] = x.tag; } }); return { added, upd }; }
   function mergeDashboard(rows) { const d = dash(); const key = (r) => r.date + '|' + r.deal + '|' + (r.sku || r.asin); const seen = new Set(rows.map(key)); d.rows = d.rows.filter(r => !seen.has(key(r))).concat(rows); }
@@ -136,7 +194,20 @@
       mergeDashboard(rows); key.dashboard = rows; out.push(`deal dashboard: ${rows.length} rows since ${since} (${[...new Set(rows.map(r => r.deal).filter(Boolean))].slice(-6).join(', ')})`);
       const a = await parseXlsx(buf, 'Deal Allocation'); const byDeal = {}; a.all.forEach(r => { if (r[0] && /^D\d{3}$/.test(String(r[0])) && r[1]) (byDeal[String(r[0])] = byDeal[String(r[0])] || []).push({ deal: String(r[0]), sku: String(r[1]).trim(), alloc: nv(r[2]) || 0, notes: r[3] || null }); });
       // tracker ids that collide with the reconciled calendar: match by tag + type + start
-      if (names.includes('Deal Calendar')) { const c = await parseXlsx(buf, 'Deal Calendar'); const mine = {}; D.deals.rows.forEach(d => { mine[d.tag + '|' + d.type + '|' + d.start] = mine[d.tag + '|' + d.type + '|' + d.start] || d.id; }); const remap = {}; c.all.forEach(r => { if (r[0] && /^D\d{3}$/.test(String(r[0])) && r[3]) { const k = String(r[1]) + '|' + String(r[2]) + '|' + dateOf(r[3]); if (mine[k] && mine[k] !== String(r[0])) remap[String(r[0])] = mine[k]; } }); Object.keys(remap).forEach(t => { if (byDeal[t]) { byDeal[remap[t]] = byDeal[t].map(x => ({ ...x, deal: remap[t] })); delete byDeal[t]; } }); if (Object.keys(remap).length) out.push('id remap ' + JSON.stringify(remap)); }
+      if (names.includes('Deal Calendar')) {
+        const c = await parseXlsx(buf, 'Deal Calendar'); const mine = {}; D.deals.rows.forEach(d => { mine[d.tag + '|' + d.type + '|' + d.start] = mine[d.tag + '|' + d.type + '|' + d.start] || d.id; });
+        const remap = {}; const cal = [];
+        c.all.forEach(r => {
+          if (!(r[0] && /^D\d{3}$/.test(String(r[0])) && r[3])) return;
+          const id = String(r[0]), tag = String(r[1] || '').trim(), type = String(r[2] || '').trim(), start = dateOf(r[3]), end = dateOf(r[4]) || start;
+          const k = tag + '|' + type + '|' + start; if (mine[k] && mine[k] !== id) remap[id] = mine[k];
+          cal.push({ id, tag, type, start, end, cancelled: r.slice(7).some(v => typeof v === 'string' && /cancel/i.test(v)) });
+        });
+        Object.keys(remap).forEach(t => { if (byDeal[t]) { byDeal[remap[t]] = byDeal[t].map(x => ({ ...x, deal: remap[t] })); delete byDeal[t]; } });
+        if (Object.keys(remap).length) out.push('id remap ' + JSON.stringify(remap));
+        const cm = mergeCalendar(cal); key.calendar = cal;
+        out.push(`calendar: ${cal.length} deals in the tracker` + (cm.added.length ? ` · added ${cm.added.join(', ')}` : '') + (cm.moved.length ? ` · window moved ${cm.moved.join(', ')}` : '') + (cm.cancelled.length ? ` · cancelled ${cm.cancelled.join(', ')}` : '') + (!cm.added.length && !cm.moved.length && !cm.cancelled.length ? ' · already in step' : ''));
+      }
       Object.keys(byDeal).forEach(deal => mergeAlloc(deal, byDeal[deal])); key.alloc = Object.values(byDeal).flat(); out.push(`allocations: ${key.alloc.length} rows for ${Object.keys(byDeal).length} deals`);
     }
     if (isDA) {
@@ -151,7 +222,7 @@
   H.items = [];
   H.init = async () => {
     try { const items = await all(); H.items = items.map(i => ({ key: i.key, ...i.val })).sort((a, b) => (a.kind + (a.date || a.deal || '')).localeCompare(b.kind + (b.date || b.deal || '')));
-      for (const it of H.items) { if (it.kind === 'sellerboard') mergeSbDay(it.date, it.recs); else if (it.kind === 'planner') mergePlanner(it.deal, it.rows); else if (it.kind === 'alloc') mergeAlloc(it.deal, it.rows); else if (it.kind === 'sc') mergeSc(it.deal, it.rec); else if (it.kind === 'workbook') { if (it.costs && it.costs.length) mergeCosts(it.costs); if (it.dashboard && it.dashboard.length) mergeDashboard(it.dashboard); (it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {}) && Object.entries((it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {})).forEach(([deal, rows]) => mergeAlloc(deal, rows)); if (it.hist && it.hist.length) mergeHist(it.hist); if (it.ais && it.ais.length) mergeAis(it.ais); } }
+      for (const it of H.items) { if (it.kind === 'sellerboard') mergeSbDay(it.date, it.recs); else if (it.kind === 'planner') mergePlanner(it.deal, it.rows); else if (it.kind === 'alloc') mergeAlloc(it.deal, it.rows); else if (it.kind === 'sc') mergeSc(it.deal, it.rec); else if (it.kind === 'deal') mergeDeal(it.spec); else if (it.kind === 'promo') mergePromo(it.deal, it.price, it.commit); else if (it.kind === 'workbook') { if (it.costs && it.costs.length) mergeCosts(it.costs); if (it.dashboard && it.dashboard.length) mergeDashboard(it.dashboard); (it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {}) && Object.entries((it.alloc || []).reduce((m, a) => { (m[a.deal] = m[a.deal] || []).push(a); return m; }, {})).forEach(([deal, rows]) => mergeAlloc(deal, rows)); if (it.hist && it.hist.length) mergeHist(it.hist); if (it.ais && it.ais.length) mergeAis(it.ais); if (it.calendar && it.calendar.length) mergeCalendar(it.calendar); } }
     } catch (e) { H.error = e.message; H.items = []; }
     return H.items;
   };

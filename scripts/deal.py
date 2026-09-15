@@ -6,6 +6,7 @@
   python scripts/deal.py reopen <ID>                       # undo a close (restores the planned window)
   python scripts/deal.py sc <ID> [--promo ID] [--status "Running"] [--asins N] [--issues N] [--sales 1234.5] [--units N] [--glance N] [--conv 0.054]
   python scripts/deal.py enrol <ID> <file>                 # confirmed enrolled ASIN list, one ASIN per line (or CSV with an ASIN column)
+  python scripts/deal.py promo <ID> <BestDeal-*-Products.xlsx>   # Seller Central product file: enrolled ASINs + booked deal price + committed units
   python scripts/deal.py objective <ID> --units N --rev N --net N [--aged N] [--label "..."]
   python scripts/deal.py window <ID> <start> <end>         # move a deal's window (e.g. after a Seller Central change)
 
@@ -100,6 +101,26 @@ def main(argv):
         if not asins: raise SystemExit('no ASINs found in ' + str(p))
         DE['known'][d['id']] = sorted(set(asins)); d['enrolled'] = len(DE['known'][d['id']])
         save(); print('enrolled list for', d['id'], '=', d['enrolled'], 'ASINs'); return
+    if cmd == 'promo':
+        import openpyxl
+        wb = openpyxl.load_workbook(rest[1], read_only=True, data_only=True)
+        ws = wb['Template'] if 'Template' in wb.sheetnames else wb.worksheets[0]
+        price, commit = {}, {}
+        for r in ws.iter_rows(values_only=True):
+            a = str(r[0]).strip() if r and r[0] else ''
+            if not re.match(r'^B0[A-Z0-9]{8}$', a): continue
+            try: price[a] = round(float(r[1]), 2)
+            except (TypeError, ValueError, IndexError): pass
+            try: commit[a] = int(float(r[2]))
+            except (TypeError, ValueError, IndexError): pass
+        if not price: raise SystemExit('no ASIN rows in ' + rest[1])
+        DE['known'][d['id']] = sorted(price)
+        DE.setdefault('promo_price', {})[d['id']] = price
+        DE.setdefault('promo_commit', {})[d['id']] = {k: v for k, v in commit.items() if v}
+        d['enrolled'] = len(price); d['asins'] = len(price)
+        avg = sum(price.values()) / len(price)
+        save(); print('%s enrolled %d ASINs from %s - deal price %.2f-%.2f (avg %.2f), %d with a committed quantity'
+                     % (d['id'], len(price), pathlib.Path(rest[1]).name, min(price.values()), max(price.values()), avg, len(DE['promo_commit'][d['id']]))); return
     if cmd == 'objective':
         ap = argparse.ArgumentParser(prog='deal.py objective'); ap.add_argument('id'); ap.add_argument('--units', type=float, required=True); ap.add_argument('--rev', type=float, required=True); ap.add_argument('--net', type=float, required=True); ap.add_argument('--aged', type=float, default=0); ap.add_argument('--label', default='')
         a = ap.parse_args(rest)
