@@ -2098,10 +2098,37 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
   };
 
 
+  // Pre-flight for a deal that has not started: what is ready, what is missing, and how to load it.
+  function readiness(d) {
+    const days = E.diffDays(today, d.start);
+    const alloc = E.allocFor(d); const allocTot = Object.values(alloc).filter(v => v > 0).reduce((a, v) => a + v, 0);
+    const withAlloc = Object.values(alloc).filter(v => v > 0).length;
+    const prows = Object.values(E.plannerFor(d));
+    const pulled = prows.length ? prows[0].asof : null;
+    const expected = prows.reduce((a, r) => a + (r.baseline_demand || 0), 0);
+    const risky = prows.filter(r => r.status === 'AT_RISK').length;
+    const mu = E.multiplier(d, today);
+    const enrolled = (D.deals.known || {})[d.id] ? D.deals.known[d.id].length : (d.enrolled || 0);
+    const pv = Object.values((D.deals.promo_price || {})[d.id] || {});
+    const fresh = !!pulled && E.diffDays(pulled, today) <= 14;
+    const missing = [!!d.promo, enrolled > 0, pv.length > 0, allocTot > 0, fresh, !!d.objective].filter(v => !v).length;
+    return `<div class="banner ${missing ? 'warn' : 'good'}">${missing ? I.warn : I.info}<div><b>${d.id} starts in ${days} day${days === 1 ? '' : 's'}</b> — ${dlong(d.start)}${d.days > 1 ? ` to ${dlong(d.end)}` : ''}. ${missing ? `${missing} of 6 things still to load before it goes live.` : 'Everything it needs is loaded.'} Day-by-day tracking starts on its first day with Sellerboard data.</div></div>
+      <div class="kpis stagger">
+        ${kpi('Starts in', days + 'd', `${d.days} day ${d.type.toLowerCase()}`)}
+        ${kpi('SKUs enrolled', enrolled || '—', enrolled ? 'confirmed list' : 'not loaded yet', enrolled ? '' : 'warn')}
+        ${kpi('Safe allocation', allocTot ? int(allocTot) : '—', allocTot ? `${withAlloc} SKUs with an allocation` : 'no STOP line yet', allocTot ? '' : 'warn')}
+        ${kpi('Expected demand', expected ? int(expected) : '—', pulled ? `planner pull ${dshort(pulled)}${fresh ? '' : ' — stale'}` : 'no planner pull', expected && fresh ? '' : 'warn')}
+        ${kpi('Multiplier', x(mu.value), mu.basis)}
+        ${kpi('Stock at risk', prows.length ? `${risky} / ${prows.length}` : '—', 'SKUs the planner marks AT_RISK', risky > prows.length / 2 ? 'warn' : '')}
+      </div>
+      <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Before it goes live</h2><span class="sub">each line is something this page needs to grade the deal properly</span></div></div><div id="dm-ready"></div></div>`;
+  }
+
   // ---------- daily monitoring ----------
   pages.daily = function (page) {
     const q = routeQuery();
-    const order = D.deals.rows.filter(d => d.start <= state.asOf && d.end >= E.firstDate).sort((a, b) => { const rk = (x) => E.status(x, today) === 'live' ? 0 : E.status(x, today) === 'past' ? 1 : 2; return rk(a) - rk(b) || b.start.localeCompare(a.start); });
+    const order = D.deals.rows.filter(d => !d.cancelled && (d.start <= state.asOf || d.start <= E.addDays(today, 30)) && d.end >= E.firstDate)
+      .sort((a, b) => { const rk = (x) => E.status(x, today) === 'live' ? 0 : E.status(x, today) === 'upcoming' ? 1 : 2; return rk(a) - rk(b) || (E.status(a, today) === 'upcoming' ? a.start.localeCompare(b.start) : b.start.localeCompare(a.start)); });
     const live = order.filter(d => E.status(d, today) === 'live');
     const id = q.deal || state.dailyDeal || (live[0] && live[0].id) || (order[0] && order[0].id);
     const d = E.dealById(id) || order[0]; state.dailyDeal = d && d.id;
@@ -2113,10 +2140,10 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     const lag = E.diffDays(E.lastDate, today);
     page.innerHTML = `<div class="view">
       <div class="page-head"><div><h2 style="font-size:16px">Daily Monitoring</h2><p>Pick a deal, drop today's Sellerboard export, and read the day: enrolment, allocation burn, sales velocity on deal days vs no-deal days, and the Seller Central log. Everything else in the app stays where it was — this tab is the morning overview.</p></div>
-        <div class="toolbar"><select id="ddeal" style="min-width:320px">${order.map(o => `<option value="${o.id}" ${o.id === d.id ? 'selected' : ''}>${o.id} · ${esc(dealTitle(o))} · ${window_(o)}${E.status(o, today) === 'live' ? ' · LIVE' : ''}</option>`).join('')}</select></div></div>
+        <div class="toolbar"><select id="ddeal" style="min-width:320px">${order.map(o => `<option value="${o.id}" ${o.id === d.id ? 'selected' : ''}>${o.id} · ${esc(dealTitle(o))} · ${window_(o)}${E.status(o, today) === 'live' ? ' · LIVE' : E.status(o, today) === 'upcoming' ? ` · STARTS IN ${E.diffDays(today, o.start)}d` : ''}</option>`).join('')}</select></div></div>
       <div class="grid g32" style="margin-bottom:12px"><div class="drop" data-kind="sellerboard" style="padding:14px"><span class="lbl">Drop today's Sellerboard export here (Products → group by ASIN → one day) — the tab refreshes on the spot</span></div>
       <div class="banner ${lag > 1 ? 'warn' : 'good'}" style="margin:0">${lag > 1 ? I.warn : I.info}<div>Sellerboard covers through <b>${dlong(E.lastDate)}</b>${lag > 1 ? ` — ${lag} days behind today.` : ' — up to date.'}${d.promo ? ` · SC <span class="mono xs">${esc(d.promo)}</span>` : ''}</div></div></div>
-      ${!m.nData ? `<div class="banner info">${I.info}<div><b>No Sellerboard days inside this deal's window yet.</b></div></div>` : `
+      ${!m.nData ? (E.status(d, today) === 'upcoming' ? readiness(d) : `<div class="banner info">${I.info}<div><b>No Sellerboard days inside this deal's window yet.</b></div></div>`) : `
       ${plainDeal(m, mu, pace)}
       <div class="kpis stagger">
         ${kpi('Day', `${m.elapsed} / ${d.days}`, `${m.nData} day${m.nData > 1 ? 's' : ''} with data`)}
@@ -2139,7 +2166,29 @@ window.DCC=window.DCC||{};window.DCC.sales_usa=[{"date":"2026-04-09","tag":"?","
     if (z && window.Hub && window.Hub.supported()) { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.xlsx,.csv'; inp.style.display = 'none'; z.appendChild(inp); const lbl = z.querySelector('.lbl'); z.addEventListener('click', () => inp.click()); z.addEventListener('dragover', ev => { ev.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over'));
       const handle = async (file) => { if (!file) return; lbl.textContent = 'Reading ' + file.name + '…'; try { const r = await window.Hub.ingestSellerboard(file, E.addDays(today, -1)); toast(`Loaded ${dshort(r.day)} — ${r.rows} rows`); E.reindex(); state.asOf = E.lastDate; render(); } catch (err) { lbl.textContent = 'Drop today\'s Sellerboard export here'; inp.value = ''; toast(err.message.slice(0, 120)); } };
       z.addEventListener('drop', ev => { ev.preventDefault(); z.classList.remove('over'); handle(ev.dataTransfer.files[0]); }); inp.addEventListener('change', () => handle(inp.files[0])); }
-    if (!m.nData) return;
+    if (!m.nData) {
+      if ($('#dm-ready')) {
+        const alloc = E.allocFor(d); const allocTot = Object.values(alloc).filter(v => v > 0).reduce((a, v) => a + v, 0);
+        const prows = Object.values(E.plannerFor(d)); const pulled = prows.length ? prows[0].asof : null;
+        const pv = Object.values((D.deals.promo_price || {})[d.id] || {});
+        const enrolled = (D.deals.known || {})[d.id] ? D.deals.known[d.id].length : (d.enrolled || 0);
+        const rows = [
+          { ok: !!d.promo, what: 'Promotion id', got: d.promo || 'missing', fix: 'Data Hub → add the deal, or drop its promotion Products file' },
+          { ok: enrolled > 0, what: 'Enrolled ASINs', got: enrolled ? enrolled + ' ASINs' : 'not loaded', fix: 'promotion Products file (BestDeal-…-Products.xlsx)' },
+          { ok: pv.length > 0, what: 'Booked deal price', got: pv.length ? `${money(Math.min(...pv), 2)}–${money(Math.max(...pv), 2)}` : 'estimated, not booked', fix: 'same file' },
+          { ok: allocTot > 0, what: 'Safe allocation', got: allocTot ? int(allocTot) + ' units' : 'none', fix: 'planner CSV, or the tracker Deal Allocation tab' },
+          { ok: !!pulled && E.diffDays(pulled, today) <= 14, what: 'Planner pull', got: pulled ? dlong(pulled) + (E.diffDays(pulled, today) > 14 ? ' — ' + E.diffDays(pulled, today) + ' days old, pull it again' : '') : 'none', fix: 'deal-allocation-' + d.tag + '-<date>.csv' },
+          { ok: !!d.objective, what: 'Objective', got: d.objective ? d.objective.label : 'not set', fix: 'the units / revenue / net this deal has to hit' }
+        ];
+        $('#dm-ready').appendChild(table([
+          { key: 'ok', label: '', fmt: v => `<span class="pill ${v ? 'good' : 'warn'}">${v ? 'ready' : 'to do'}</span>` },
+          { key: 'what', label: 'What', fmt: v => `<b>${esc(v)}</b>` },
+          { key: 'got', label: 'On file', fmt: (v, r) => r.ok ? esc(v) : `<span class="neg">${esc(v)}</span>` },
+          { key: 'fix', label: 'How to load it', fmt: v => `<span class="dim xs">${esc(v)}</span>` }
+        ], rows, { empty: '' }));
+      }
+      return;
+    }
     let cum = 0;
     const dayRows = m.daily.map(r => { cum += r.units; return { ...r, cum, upliftDay: m.base.units > 0 ? r.units / m.base.units : null, tacosDay: r.sales ? r.ads / r.sales : null, burn: allocTot ? cum / allocTot : null }; });
     $('#dm-days').appendChild(table([

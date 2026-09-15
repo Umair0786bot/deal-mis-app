@@ -4,7 +4,7 @@
 const path = require('path'), fs = require('fs');
 let chromium; try { ({ chromium } = require('playwright')); } catch (e) { console.error('playwright is not installed - run `npm install` in deal-mis/ once.'); process.exit(2); }
 const target = path.resolve(process.argv[2] || path.join(__dirname, '..', 'dist', 'deal-mis.html'));
-const routes = ['', 'performance', 'performance/D105/pnl', 'performance/D105/skus', 'performance/D105/expected', 'performance/D105/stops', 'performance/D105/outlook', 'performance/D105/plan', 'daily', 'hub', 'planner', 'stops', 'history', 'ppc', 'storage', 'process'];
+const routes = ['', 'performance', 'performance/D105/pnl', 'performance/D105/skus', 'performance/D105/expected', 'performance/D105/stops', 'performance/D105/outlook', 'performance/D105/plan', 'daily', 'daily?deal=D127', 'daily?deal=D128', 'hub', 'planner', 'stops', 'history', 'ppc', 'storage', 'process'];
 (async () => {
   const browser = await chromium.launch(); const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = []; page.on('pageerror', e => errors.push('PAGEERROR ' + e.message)); page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE ' + m.text()); });
