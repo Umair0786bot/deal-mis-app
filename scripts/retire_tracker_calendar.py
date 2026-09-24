@@ -15,7 +15,7 @@ def patch(path, pairs):
 
 # 1. Data Hub: a tracker upload still loads allocations / cost master / dashboard / AIS, but never touches the calendar
 p = pathlib.Path('assets/hub.js'); s = p.read_text(encoding='utf-8')
-if 'mergeCalendar(cal)' in s:
+if 'const cm = mergeCalendar(cal)' in s:
     s = s.replace("        const cm = mergeCalendar(cal); key.calendar = cal;\n",
                   "        // 24 Sep 2026: the tracker's Deal Calendar is no longer a source - the app calendar (Seller Central screen + Data Hub card 5) is.\n", 1)
     s, k = re.subn(r"out\.push\(`calendar: \$\{cal\.length\} deals in the tracker`[^\n]*\);",
@@ -23,7 +23,7 @@ if 'mergeCalendar(cal)' in s:
     assert k == 1, 'calendar push line'
     s, k = re.subn(r" if \(it\.calendar && it\.calendar\.length\) mergeCalendar\(it\.calendar\);", "", s, count=1)
     assert k == 1, 'calendar re-merge'
-    assert 'mergeCalendar(cal)' not in s and 'mergeCalendar(it.calendar)' not in s
+    assert 'const cm = mergeCalendar(cal)' not in s and 'mergeCalendar(it.calendar)' not in s
     p.write_text(s, encoding='utf-8'); print('patched assets/hub.js')
 else:
     print('assets/hub.js already patched')

@@ -17,6 +17,8 @@ one file.
 
 Drop the day's Sellerboard export - Group by ASIN or Group by Parent, one day per file - (and any new planner / tracker files) in `~/Downloads`, then in Claude Code:
 `/deal-update` (ingest + rebuild + morning update + verify) → `/deal-publish` (push + republish). `/deal-status` prints the update without changing anything; `/deal-edit` adds, closes or cancels deals and records Seller Central facts (`scripts/deal.py`).
+
+**The calendar lives in the app.** Since 24 Sep 2026 the deal calendar is maintained here from the Seller Central Manage Promotions screen (promotion id, dates, ASINs, issues, parent) and is no longer synced from the tracker's Deal Calendar tab. A tracker upload still refreshes allocations, cost master, dashboard pulls and AIS.
 Scripts: `scripts/update_data.py`, `scripts/deal.py`, `scripts/status.cjs`, `scripts/bundle.py`, `scripts/verify.cjs` (`npm install` once for the headless check).
 
 ## Run it

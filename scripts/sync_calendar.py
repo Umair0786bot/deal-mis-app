@@ -23,7 +23,10 @@ ap.add_argument('--downloads', default=os.path.expanduser('~/Downloads'))
 ap.add_argument('--file')
 ap.add_argument('--dry-run', action='store_true')
 ap.add_argument('--keep-extra', action='store_true')
+ap.add_argument('--force-from-tracker', action='store_true', help='RETIRED 24 Sep 2026: the app calendar is the source; only use to rebuild history from an old tracker')
 A = ap.parse_args()
+if not A.force_from_tracker:
+    raise SystemExit('sync_calendar.py is retired (24 Sep 2026): the Deal MIS calendar is maintained from the Seller Central screen with scripts/deal.py and the Data Hub. Pass --force-from-tracker only to rebuild history from an old tracker.')
 
 
 def load(name):
