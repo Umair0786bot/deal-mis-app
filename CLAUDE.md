@@ -45,6 +45,13 @@ parent summary row (SKU empty) is dropped and child rows are summed per ASIN, wh
 (identity check still applies). Tracker tag aliases live in `TAG_ALIAS` in `update_data.py` and `sync_calendar.py`
 (tracker `SSS4` = app `SS4`); add there when the tracker names a parent differently from the SKU tags.
 
+## Seller Central screen bookings (24 Sep)
+`scripts/sc_screen_2026-09-24.py` added D135-D171 from the Manage Promotions screen (US rows, promotion ids, ASIN counts,
+issues) with `source: 'SC screen 2026-09-24'`; rows tagged by thumbnail + ASIN count carry `confirm_tag: true` and a `note`.
+`sync_calendar.py` keeps `source: 'SC screen…'` deals even when the tracker lacks them, and skips tracker rows that say
+"never ran". D128 SS4 BD 17-30 Sep and D133 BF LD 25 Sep never ran (user-confirmed 24 Sep) and were deleted - mark them
+"cancel - never ran" in the tracker. Paste rows for the tracker: `1-Deliverables/Tracker Deal Calendar rows 2026-09-24.csv`.
+
 ## Data shape
 `sellerboard.js`: `dates[]`, `asins[[asin, sku, tag]]`, `rows[[dateIdx, asinIdx, units, sales, ppc, ads, net, bsr, fees, cogs, refunds]]` in cents, identity `sales − ads − fees − cogs − refunds = net`; `age{asinIdx: [charge/mo, aged units, in30, in60, in90, rate]}` (FBA age snapshot). `deals.js`: `rows[]` (id, tag, type, start, end, days, promo, asins, issues, sc_*, enrolled, objective, cancelled, planned_end, closed_note), `known{}`, `not_in_export[]`, `shape_by_tag{}`. `allocations.js`, `planner.js` (with `asof`), `skus.js` (price, cogs, fba, p30, fba_on_hand, rank_var), `ads.js` (Scale Insight, dated by hand), `uplift.js`.
 

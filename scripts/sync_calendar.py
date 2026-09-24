@@ -48,6 +48,8 @@ cal = []
 for r in wb['Deal Calendar'].iter_rows(values_only=True):
     if not (r and isinstance(r[0], str) and re.match(r'^D\d{3}$', r[0]) and hasattr(r[3], 'date')):
         continue
+    if any(isinstance(v, str) and 'never ran' in v.lower() for v in r):
+        continue  # cancelled before it started: not a deal, not measured
     end = r[4].date().isoformat() if hasattr(r[4], 'date') else r[3].date().isoformat()
     cal.append(dict(id=r[0], tag=TAG_ALIAS.get((r[1] or '').strip(), (r[1] or '').strip()), type=(r[2] or '').strip(), start=r[3].date().isoformat(),
                     end=end, cancelled=any(isinstance(v, str) and 'cancel' in v.lower() for v in r[7:]),
@@ -77,6 +79,10 @@ for c in cal:
         d.setdefault('closed_note', 'Cancelled in the tracker.')
     rows.append(d)
 dropped = [d for d in DE['rows'] if d['id'] not in matched]
+# bookings read off a Seller Central screen (deal.py add / sc_screen_*.py) outlive a tracker that has not caught up
+keep = [d for d in dropped if str(d.get('source', '')).startswith('SC screen')]
+rows += keep; dropped = [d for d in dropped if d not in keep]
+if keep: print('  kept (Seller Central bookings the tracker lacks):', len(keep))
 if A.keep_extra:
     rows += dropped; dropped = []
 

@@ -88,7 +88,7 @@ def main(argv):
         if a.sales is not None or a.units is not None:
             hist = [h for h in d.get('sc_history', []) if h['date'] != iso(a.date)]
             hist.append(dict(date=iso(a.date), sales=a.sales, units=a.units, glance=a.glance, conv=a.conv)); d['sc_history'] = sorted(hist, key=lambda h: h['date']); d['sc_asof'] = iso(a.date)
-        save(); print('updated', d['id'], {k: d[k] for k in ('promo', 'sc_status', 'asins', 'issues', 'sc_sales', 'sc_units', 'sc_glance', 'sc_conv')}); return
+        save(); print('updated', d['id'], {k: d.get(k) for k in ('promo', 'sc_status', 'asins', 'issues', 'sc_sales', 'sc_units', 'sc_glance', 'sc_conv')}); return
     if cmd == 'enrol':
         p = pathlib.Path(rest[1]); text = p.read_text(encoding='utf-8-sig')
         asins = []
