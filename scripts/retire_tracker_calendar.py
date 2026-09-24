@@ -12,11 +12,17 @@ def patch(path, pairs):
     p.write_text(s, encoding='utf-8'); print('patched', path)
 
 # 1. Data Hub: a tracker upload still loads allocations / cost master / dashboard / AIS, but never touches the calendar
-patch('assets/hub.js', [
-    ("        const cm = mergeCalendar(cal); key.calendar = cal;\n        out.push(`calendar: ${cal.length} deals in the tracker` + (cm.added.length ? ` · added ${cm.added.join(', ')}` : '') + (cm.moved.length ? ` · window moved ${cm.moved.join(', ')}` : '') + (cm.cancelled.length ? ` · cancelled ${cm.cancelled.join(', ')}` : ''));",
-     "        // 24 Sep 2026: the tracker's Deal Calendar is no longer a source - the app calendar (Seller Central screen + Data Hub card 5) is.\n        out.push(`calendar: ${cal.length} rows in the tracker ignored - the app calendar is the source`);"),
-    (" if (it.calendar && it.calendar.length) mergeCalendar(it.calendar); } }", " } }"),
-])
+p = pathlib.Path('assets/hub.js'); s = p.read_text(encoding='utf-8')
+s = s.replace("        const cm = mergeCalendar(cal); key.calendar = cal;
+", "        // 24 Sep 2026: the tracker's Deal Calendar is no longer a source - the app calendar (Seller Central screen + Data Hub card 5) is.
+", 1)
+s, k = re.subn(r"out\.push\(`calendar: \$\{cal\.length\} deals in the tracker`[^
+]*\);", "out.push(`calendar: ${cal.length} rows in the tracker ignored - the app calendar is the source`);", s, count=1)
+assert k == 1, 'calendar push line'
+s, k = re.subn(r" if \(it\.calendar && it\.calendar\.length\) mergeCalendar\(it\.calendar\);", "", s, count=1)
+assert k == 1, 'calendar re-merge'
+assert 'mergeCalendar(cal)' not in s and 'mergeCalendar(it.calendar)' not in s
+p.write_text(s, encoding='utf-8'); print('patched assets/hub.js')
 
 # 2. sync_calendar.py refuses unless forced
 p = pathlib.Path('scripts/sync_calendar.py'); s = p.read_text(encoding='utf-8')
