@@ -20,6 +20,8 @@ import openpyxl
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'data')
+# tracker / planner parent tags that differ from the SKU tags the feeds use (tracker -> app)
+TAG_ALIAS = {'SSS4': 'SS4'}
 ap = argparse.ArgumentParser()
 ap.add_argument('--downloads', default=os.path.expanduser('~/Downloads'))
 ap.add_argument('--from', dest='from_', default=None)
@@ -45,24 +47,41 @@ from_ = A.from_ or SB['dates'][-1]
 print('feed ends', SB['dates'][-1], '- refreshing from', from_)
 
 # ---------- 1. Sellerboard ----------
-pat = re.compile(r'Group_by_ASIN_(\d\d)_(\d\d)_(\d{4})-(\d\d)_(\d\d)_(\d{4})_\((\d{4}_\d\d_\d\d_\d\d_\d\d_\d\d_\d+)\)_sellerboard\.com\.xlsx$')
+pat = re.compile(r'Group_by_(ASIN|Parent)_(\d\d)_(\d\d)_(\d{4})-(\d\d)_(\d\d)_(\d{4})_\((\d{4}_\d\d_\d\d_\d\d_\d\d_\d\d_\d+)\)_sellerboard\.com\.xlsx$')
 files = {}
-for f in glob.glob(os.path.join(A.downloads, 'Ecotero_Dashboard_Products_Group_by_ASIN_*.xlsx')):
+# 'Group by ASIN' = one row per ASIN (multi-SKU ASINs carry SKU None). 'Group by Parent' = a parent summary row
+# (SKU None) followed by one row per child SKU; the same ASIN can appear once per SKU. Both are accepted:
+# parent rows are dropped and child rows summed per ASIN, which reproduces the per-ASIN export.
+for f in glob.glob(os.path.join(A.downloads, 'Ecotero_Dashboard_Products_Group_by_*.xlsx')):
     m = pat.search(os.path.basename(f))
-    if not m or (m.group(1), m.group(2), m.group(3)) != (m.group(4), m.group(5), m.group(6)):
+    if not m or (m.group(2), m.group(3), m.group(4)) != (m.group(5), m.group(6), m.group(7)):
         continue  # only single-day exports
-    day = '%s-%s-%s' % (m.group(3), m.group(2), m.group(1))
+    day = '%s-%s-%s' % (m.group(4), m.group(3), m.group(2))
     if day < from_:
         continue
-    if day not in files or m.group(7) > files[day][0]:
-        files[day] = (m.group(7), f)
+    if day not in files or m.group(8) > files[day][0]:
+        files[day] = (m.group(8), f, m.group(1))
 cents = lambda v: int(round(float(v or 0) * 100))
 for day in sorted(files):
-    stamp, f = files[day]
+    stamp, f, kind = files[day]
     ws = openpyxl.load_workbook(f, read_only=True, data_only=True).worksheets[0]
     rows = list(ws.iter_rows(values_only=True)); hdr = list(rows[0]); hi = {h: i for i, h in enumerate(hdr)}
     refund_col = next(h for h in hdr if h and h.startswith('Refund') and 'ost' in h)
     body = [r for r in rows[1:] if r[hi['ASIN']]]
+    if kind == 'Parent':
+        SUM = ('Units', 'Sales', 'Sponsored products (PPC)', 'Ads', 'Net profit', 'Amazon fees', 'Cost of Goods', refund_col)
+        merged = {}
+        for r in body:
+            if not r[hi['SKU']]:
+                continue  # parent summary row
+            a = r[hi['ASIN']]
+            if a not in merged:
+                merged[a] = list(r); continue
+            m0 = merged[a]
+            for c in SUM:
+                m0[hi[c]] = (float(m0[hi[c]] or 0) + float(r[hi[c]] or 0))
+            if not m0[hi['BSR']] and r[hi['BSR']]: m0[hi['BSR']] = r[hi['BSR']]
+        body = [tuple(v) for v in merged.values()]
     if len(body) < 200:
         print('REJECT', day, 'only', len(body), 'ASIN rows (broken export)'); continue
     if day not in SB['dates']:
@@ -84,7 +103,7 @@ for day in sorted(files):
         SB['rows'].append([di, asin_idx[asin], int(g('Units') or 0), cents(g('Sales')), -cents(g('Sponsored products (PPC)')), -cents(g('Ads')), cents(g('Net profit')), bsr, -cents(g('Amazon fees')), -cents(g('Cost of Goods')), -cents(g(refund_col))])
         added += 1
     bad = sum(1 for r in SB['rows'] if r[0] == di and abs((r[3] - r[5] - r[8] - r[9] - r[10]) - r[6]) > 1)
-    print('Sellerboard %s <- %s rows (%d new ASINs, identity mismatches %d) from pull %s' % (day, added, new_asins, bad, stamp))
+    print('Sellerboard %s <- %s rows (%d new ASINs, identity mismatches %d) from %s pull %s' % (day, added, new_asins, bad, kind, stamp))
 SB['rows'].sort(key=lambda r: (r[0], r[1]))
 emit('sellerboard', SB)
 
@@ -99,7 +118,7 @@ if trackers:
     cal = {}
     for r in wb['Deal Calendar'].iter_rows(values_only=True):
         if r and isinstance(r[0], str) and re.match(r'^D\d{3}$', r[0]) and hasattr(r[3], 'date'):
-            cal[r[0]] = (r[1], r[2], r[3].date().isoformat())
+            cal[r[0]] = (TAG_ALIAS.get(r[1], r[1]), r[2], r[3].date().isoformat())
     idmap = {}
     for tid, key in cal.items():
         mine = by_key.get(key)
@@ -127,6 +146,7 @@ for f in pcsv:
 alloc_by_deal = {}
 for a in AL: alloc_by_deal.setdefault(a['deal'], set()).add(a['sku'])
 for tag, (pulled, f) in latest.items():
+    tag = TAG_ALIAS.get(tag, tag)
     text = open(f, encoding='utf-8-sig').read()
     if 'SKU DETAIL' not in text: continue
     detail = text.split('SKU DETAIL', 1)[1].strip().splitlines()

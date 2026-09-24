@@ -15,7 +15,7 @@ one file.
 ## Daily routine (replaces the Google-Sheet pastes)
 **Fastest:** open the app → **Data Hub** tab → drop the day's Sellerboard export (xlsx or csv). It is parsed in the browser, validated, merged, and remembered in that browser (IndexedDB). Planner CSVs, allocation CSVs and the Seller Central reading (sales / units / glance / conversion) go in the same tab. Uploads are per-browser; to make them permanent for everyone run `/deal-update` with the same file in Downloads.
 
-Drop the day's Sellerboard per-ASIN export (and any new planner / tracker files) in `~/Downloads`, then in Claude Code:
+Drop the day's Sellerboard export - Group by ASIN or Group by Parent, one day per file - (and any new planner / tracker files) in `~/Downloads`, then in Claude Code:
 `/deal-update` (ingest + rebuild + morning update + verify) → `/deal-publish` (push + republish). `/deal-status` prints the update without changing anything; `/deal-edit` adds, closes or cancels deals and records Seller Central facts (`scripts/deal.py`).
 Scripts: `scripts/update_data.py`, `scripts/deal.py`, `scripts/status.cjs`, `scripts/bundle.py`, `scripts/verify.cjs` (`npm install` once for the headless check).
 

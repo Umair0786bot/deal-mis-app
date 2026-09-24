@@ -39,6 +39,12 @@ now vel, velocity-share rank tags); SC log. Adds a view only — no other tab wa
 - Lightning Deal enrolment = velocity × LD multiplier × days × 1.3, capped by safe allocation and stock above the hard floor — distinct from safe allocation.
 - Parents with no SKUs in the Sellerboard feed show NO SKU DATA and are never graded.
 
+## Sellerboard export variants (24 Sep)
+`update_data.py` accepts single-day `Group_by_ASIN` AND `Group_by_Parent` exports. In the parent-grouped file the
+parent summary row (SKU empty) is dropped and child rows are summed per ASIN, which reproduces the per-ASIN export
+(identity check still applies). Tracker tag aliases live in `TAG_ALIAS` in `update_data.py` and `sync_calendar.py`
+(tracker `SSS4` = app `SS4`); add there when the tracker names a parent differently from the SKU tags.
+
 ## Data shape
 `sellerboard.js`: `dates[]`, `asins[[asin, sku, tag]]`, `rows[[dateIdx, asinIdx, units, sales, ppc, ads, net, bsr, fees, cogs, refunds]]` in cents, identity `sales − ads − fees − cogs − refunds = net`; `age{asinIdx: [charge/mo, aged units, in30, in60, in90, rate]}` (FBA age snapshot). `deals.js`: `rows[]` (id, tag, type, start, end, days, promo, asins, issues, sc_*, enrolled, objective, cancelled, planned_end, closed_note), `known{}`, `not_in_export[]`, `shape_by_tag{}`. `allocations.js`, `planner.js` (with `asof`), `skus.js` (price, cogs, fba, p30, fba_on_hand, rank_var), `ads.js` (Scale Insight, dated by hand), `uplift.js`.
 

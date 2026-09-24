@@ -17,6 +17,8 @@ import argparse, datetime, glob, json, os, re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'data')
 ap = argparse.ArgumentParser()
+# tracker parent tags that differ from the SKU tags the feeds use (tracker -> app)
+TAG_ALIAS = {'SSS4': 'SS4'}
 ap.add_argument('--downloads', default=os.path.expanduser('~/Downloads'))
 ap.add_argument('--file')
 ap.add_argument('--dry-run', action='store_true')
@@ -47,7 +49,7 @@ for r in wb['Deal Calendar'].iter_rows(values_only=True):
     if not (r and isinstance(r[0], str) and re.match(r'^D\d{3}$', r[0]) and hasattr(r[3], 'date')):
         continue
     end = r[4].date().isoformat() if hasattr(r[4], 'date') else r[3].date().isoformat()
-    cal.append(dict(id=r[0], tag=(r[1] or '').strip(), type=(r[2] or '').strip(), start=r[3].date().isoformat(),
+    cal.append(dict(id=r[0], tag=TAG_ALIAS.get((r[1] or '').strip(), (r[1] or '').strip()), type=(r[2] or '').strip(), start=r[3].date().isoformat(),
                     end=end, cancelled=any(isinstance(v, str) and 'cancel' in v.lower() for v in r[7:]),
                     status=(r[7] or '').strip() if len(r) > 7 and isinstance(r[7], str) else ''))
 print('tracker calendar:', len(cal), 'deals,', sum(1 for c in cal if c['cancelled']), 'cancelled')
