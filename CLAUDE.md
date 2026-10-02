@@ -59,6 +59,14 @@ issues) with `source: 'SC screen 2026-09-24'`; rows tagged by thumbnail + ASIN c
 D128 SS4 BD 17-30 Sep and D133 BF LD 25 Sep never ran (user-confirmed 24 Sep) and were deleted. Umair's tag vocabulary:
 DPC = SPC, SSS4 = SS4 (`TAG_ALIAS`).
 
+## Amazon deal feed reconcile + Sellerboard via MCP (2 Oct)
+`scripts/sc_feed_2026-10-02.py` reconciled the calendar to Amazon's US deal records (Command Center `amazon_promotions`,
+1 Oct snapshot): removed D121, D127, D129, D131, D132, D135, D136, D137 (CANCELED, never ran - user-confirmed), added
+D177-D179 (S6 LDs 12/24/30 Oct, booked 24 Sep), and stored Amazon's final deal attribution as `sc_*` (with
+`amazon_promotion` id) for the deals that ran since mid-August. `scripts/import_sellerboard_mcp.py <dir>` loads days
+pulled with the Sellerboard MCP (`dashboard_table`, product rows, amazon.com, one day per call, raw replies saved as
+`<date>_c<count>_p<NN>.txt`); SKU rows are summed per ASIN like the Group-by-Parent export.
+
 ## Data shape
 `sellerboard.js`: `dates[]`, `asins[[asin, sku, tag]]`, `rows[[dateIdx, asinIdx, units, sales, ppc, ads, net, bsr, fees, cogs, refunds]]` in cents, identity `sales − ads − fees − cogs − refunds = net`; `age{asinIdx: [charge/mo, aged units, in30, in60, in90, rate]}` (FBA age snapshot). `deals.js`: `rows[]` (id, tag, type, start, end, days, promo, asins, issues, sc_*, enrolled, objective, cancelled, planned_end, closed_note), `known{}`, `not_in_export[]`, `shape_by_tag{}`. `allocations.js`, `planner.js` (with `asof`), `skus.js` (price, cogs, fba, p30, fba_on_hand, rank_var), `ads.js` (Scale Insight, dated by hand), `uplift.js`.
 
