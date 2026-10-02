@@ -66,6 +66,11 @@ D177-D179 (S6 LDs 12/24/30 Oct, booked 24 Sep), and stored Amazon's final deal a
 `amazon_promotion` id) for the deals that ran since mid-August. `scripts/import_sellerboard_mcp.py <dir>` loads days
 pulled with the Sellerboard MCP (`dashboard_table`, product rows, amazon.com, one day per call, raw replies saved as
 `<date>_c<count>_p<NN>.txt`); SKU rows are summed per ASIN like the Group-by-Parent export.
+`scripts/import_planner_mcp.py <dir>` loads Allocation Planner results from the Command Center MCP
+(`planner_allocation_compute` with the calendar deal id, lift_out true, limit 300; one reply per deal saved as `<DealId>.txt`)
+into `planner.js` - the same columns as the deal-allocation CSV, plus `exp_uplift` (expected units with the deal's lift).
+`baseline_demand` is the planner's expected units in the deal window with the deal's own lift divided out; per-SKU values
+are whole units, so long-tail families round down (e.g. Linen Curtains 0).
 
 ## Data shape
 `sellerboard.js`: `dates[]`, `asins[[asin, sku, tag]]`, `rows[[dateIdx, asinIdx, units, sales, ppc, ads, net, bsr, fees, cogs, refunds]]` in cents, identity `sales − ads − fees − cogs − refunds = net`; `age{asinIdx: [charge/mo, aged units, in30, in60, in90, rate]}` (FBA age snapshot). `deals.js`: `rows[]` (id, tag, type, start, end, days, promo, asins, issues, sc_*, enrolled, objective, cancelled, planned_end, closed_note), `known{}`, `not_in_export[]`, `shape_by_tag{}`. `allocations.js`, `planner.js` (with `asof`), `skus.js` (price, cogs, fba, p30, fba_on_hand, rank_var), `ads.js` (Scale Insight, dated by hand), `uplift.js`.
